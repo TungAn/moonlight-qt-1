@@ -60,7 +60,7 @@ jobs:
           cmake --build Vulkan-Loader/build -j$(nproc)
           sudo cmake --install Vulkan-Loader/build
 
-          git clone --depth 1 --branch 15.3.0 https://github.com/KhronosGroup/glslang.git
+          git clone --depth 1 --branch 14.3.0 https://github.com/KhronosGroup/glslang.git
           cmake -S glslang -B glslang/build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=OFF \
             -DGLSLANG_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
           cmake --build glslang/build -j$(nproc)
