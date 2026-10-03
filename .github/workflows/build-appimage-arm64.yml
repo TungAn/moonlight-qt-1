@@ -62,7 +62,8 @@ jobs:
 
           git clone --depth 1 --branch 14.3.0 https://github.com/KhronosGroup/glslang.git
           cmake -S glslang -B glslang/build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=OFF \
-            -DGLSLANG_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DGLSLANG_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/aarch64-linux-gnu
           cmake --build glslang/build -j$(nproc)
           sudo cmake --install glslang/build && grep -E "\\.(a|so)$" glslang/build/install_manifest.txt
           sudo ldconfig
@@ -138,7 +139,7 @@ jobs:
         working-directory: deps/libplacebo
         run: |
           git apply ../../app/deploy/linux/appimage/*.patch
-          meson setup build -Dvulkan=enabled -Dopengl=disabled -Ddemos=false -Dglslang=enabled -Dshaderc=disabled -Dvulkan-sdk=/usr/local
+          meson setup build -Dvulkan=enabled -Dopengl=disabled -Ddemos=false -Dglslang=enabled -Dshaderc=disabled
           ninja -C build
           sudo ninja install -C build
 
