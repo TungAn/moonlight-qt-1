@@ -95,6 +95,9 @@ jobs:
           cmake -DSDL2COMPAT_TESTS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
           cmake --build build -j
           sudo cmake --install build
+          # sdl2-compat only installs sdl2-compat.pc; qmake and SDL_ttf look up "sdl2"
+          sudo ln -sf sdl2-compat.pc /usr/local/lib/pkgconfig/sdl2.pc
+          pkg-config --modversion sdl2
 
       - name: Checkout SDL_ttf
         uses: actions/checkout@v5
