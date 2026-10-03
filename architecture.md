@@ -181,19 +181,16 @@ round-trip test decodes through both paths (shared planes read back with
 establish live-stream cadence or physical scanout. VRR policy and replay are
 unchanged.
 
-Decoder probe under Gamescope and PyroWave HDR (2026-10-03): the startup and
-launch decoder probes (`getDecoderInfo()`, `getDecoderAvailability()`) render
-into a hidden test window. Gamescope's WSI layer segfaults creating a Vulkan
-surface for that never-mapped X11 window (seen on arm64 DroidDeck; the stream
-window is visible and unaffected). In test-only mode with Gamescope present and
-`ENABLE_GAMESCOPE_WSI` not `0`, `PlVkRenderer` therefore skips the window
-surface, present-mode selection and swapchain; it still creates the device, the
-hwaccel context and the PyroWave pool, and the decoder's test frame still maps.
-Presentation and HDR10 colour-space support are then checked only when the
-stream window's renderer is created, which falls back to SDR as before.
-`getDecoderInfo()` also probes PyroWave 10-bit when no HEVC/AV1 Main10 path
-reported HDR, so GPUs without 10-bit HEVC/AV1 decoding can enable HDR for
-PyroWave streams.
+AppImage Vulkan loader and PyroWave HDR (2026-10-03): the AppImage no longer
+bundles `libvulkan.so.1`. With the bundled loader, Gamescope's WSI layer
+segfaulted on the process's first `vkCreateXcbSurfaceKHR()` (the decoder
+probe's test window, or Qt's Zink surface), so Moonlight crashed at startup
+inside Gamescope unless `ENABLE_GAMESCOPE_WSI=0`. Preloading the host loader
+fixed both the vrr18 build and the previous one on arm64 DroidDeck, so the
+loader, not the probe, was the cause. `getDecoderInfo()` also probes PyroWave
+10-bit when no HEVC/AV1 Main10 path reported HDR, so GPUs without 10-bit
+HEVC/AV1 decoding can enable HDR for PyroWave streams; without an HDR10 surface
+the stream renderer still falls back to SDR output.
 
 PyroWave coefficient-store optimization (2026-09-27): RADV specializes the
 dequant shader to stage each 32x32 coefficient tile in 4 KiB of FP32 shared

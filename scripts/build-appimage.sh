@@ -64,8 +64,12 @@ export QMAKE=qmake6
 
 echo Creating AppImage
 pushd $INSTALLER_FOLDER
+# The Vulkan loader must come from the host so it matches the host's drivers and
+# implicit layers. With our bundled loader, Gamescope's WSI layer segfaults on the
+# first vkCreateXcbSurfaceKHR(), so Moonlight crashed at startup inside Gamescope.
 VERSION=$VERSION $LINUXDEPLOY --appdir $DEPLOY_FOLDER \
   --library=/usr/local/lib/libSDL3.so.0 \
+  --exclude-library='libvulkan.so*' \
   --plugin qt --output appimage || fail "linuxdeploy failed!"
 popd
 
