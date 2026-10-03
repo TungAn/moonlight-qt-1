@@ -481,6 +481,22 @@ void Session::getDecoderInfo(SDL_Window* window,
         }
     }
 
+#ifdef HAVE_PYROWAVE
+    // PyroWave carries 10-bit video without an HEVC or AV1 decoder, so a GPU
+    // that decodes PyroWave 10-bit can stream HDR when those probes fail.
+    if (!isHdrSupported &&
+        chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
+                      StreamingPreferences::RS_PROBE_ONLY,
+                      window, VIDEO_FORMAT_PYROWAVE_HDR10, 1920, 1080, 60,
+                      false, false, true, decoder)) {
+        isHdrSupported = decoder->isHdrSupported();
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave 10-bit decoder probe: HDR %s",
+                    isHdrSupported ? "supported" : "unsupported");
+        delete decoder;
+    }
+#endif
+
     // Try a regular hardware accelerated HEVC decoder now
     if (chooseDecoder(StreamingPreferences::VDS_FORCE_HARDWARE,
                       StreamingPreferences::RS_PROBE_ONLY,

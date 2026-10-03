@@ -170,6 +170,8 @@ private:
     pl_log m_Log = nullptr;
     pl_vk_inst m_PlVkInstance = nullptr;
     VkSurfaceKHR m_VkSurface = VK_NULL_HANDLE;
+    // Decoder probe under Gamescope's WSI layer: no window surface or swapchain
+    bool m_SurfacelessProbe = false;
     int m_SwapchainDepth = 0;
     VkPresentModeKHR m_VkPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     VkPresentModeKHR m_VrrAdaptivePresentMode = VK_PRESENT_MODE_FIFO_KHR;
