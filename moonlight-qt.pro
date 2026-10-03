@@ -22,7 +22,7 @@ win32:!winrt:contains(QT_ARCH, x86_64):!disable-pyrowave {
     SUBDIRS += pyrowave
     app.depends += pyrowave
 }
-linux:contains(QT_ARCH, x86_64):!disable-pyrowave:!disable-libplacebo:packagesExist(libplacebo) {
+linux:if(contains(QT_ARCH, x86_64)|contains(QT_ARCH, arm64)):!disable-pyrowave:!disable-libplacebo:packagesExist(libplacebo) {
     SUBDIRS += pyrowave
     app.depends += pyrowave
 }
