@@ -21,4 +21,5 @@ jobs:
           VK_LOADER_DEBUG=layer timeout 120 xvfb-run -a vkcube --c 9000 > out.txt 2>&1; echo "exit=$?"
           grep -E "present-wait|Insert instance layer|ERROR|rror" out.txt | head -20
       - name: same without the layer (baseline)
-        run: DROIDDECK_PRESENT_WAIT=0 timeout 120 xvfb-run -a vkcube --c 2000 2>&1 | grep -c present-wait || echo "layer off: no reports (expected)"
+        run: |
+          DROIDDECK_PRESENT_WAIT=0 timeout 120 xvfb-run -a vkcube --c 2000 2>&1 | grep -c present-wait || echo "layer off - no reports, as expected"
