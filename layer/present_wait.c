@@ -11,8 +11,15 @@
  *
  * This layer moves the present's semaphore waits into an empty submit with a fence, waits for that
  * fence on the CPU, and then presents with nothing left to wait for: the buffer leaves the program
- * finished. It costs the present thread the rest of the frame's GPU time, which a compositor that
- * cannot wait itself had to pay anyway. DROIDDECK_PRESENT_WAIT=0 turns it off (see the manifest).
+ * finished. It costs the present thread the rest of the frame's GPU time: a frame that used to be
+ * picked up while still drawing (shown finished only when the race was won) now reaches the
+ * compositor that much later.
+ *
+ * Off unless asked for, per program: a streaming client gains nothing from it, an emulator drawing
+ * heavy frames does. It is on for a program named in /storage/emulated/0/Download/
+ * droiddeck-present-wait.txt (one name per line, '#' comments; a case-insensitive match anywhere in
+ * the process name, its executable's path or its argv[0]). DROIDDECK_PRESENT_WAIT=1 turns it on for
+ * every program, =0 for none (the manifest's disable_environment then skips loading the layer).
  *
  * Built freestanding (no libc headers); memset/memcpy come from the process's libc at load time.
  */
@@ -220,6 +227,96 @@ static VkFence fence_for(VkQueue queue, struct device_entry *dev) {
     return VK_NULL_HANDLE;
 }
 
+/* ---- which programs it is on for ---- */
+extern int open(const char *path, int flags, ...);
+extern long read(int fd, void *buf, unsigned long n);
+extern int close(int fd);
+extern long readlink(const char *path, char *buf, unsigned long n);
+extern char *getenv(const char *name);
+static long write_out(const char *s, unsigned long n);
+
+#define LIST_PATH "/storage/emulated/0/Download/droiddeck-present-wait.txt"
+
+static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c; }
+/* Case-insensitive: does needle (n bytes) occur in hay? */
+static int contains(const char *hay, const char *needle, int n) {
+    if (n <= 0) return 0;
+    for (; *hay; hay++) {
+        int i = 0;
+        while (i < n && hay[i] && lower(hay[i]) == lower(needle[i])) i++;
+        if (i == n) return 1;
+    }
+    return 0;
+}
+static int read_file(const char *path, char *buf, int cap) {
+    int fd = open(path, 0 /* O_RDONLY */);
+    if (fd < 0) return 0;
+    long n = read(fd, buf, (unsigned long)(cap - 1));
+    close(fd);
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    return (int)n;
+}
+
+static int g_decided, g_enabled;
+static char g_why[160];
+
+static void put_why(const char *a, const char *b, int bn) {
+    char *p = g_why, *end = g_why + sizeof(g_why) - 1;
+    while (*a && p < end) *p++ = *a++;
+    for (int i = 0; i < bn && p < end; i++) *p++ = b[i];
+    *p = 0;
+}
+
+static void decide(void) {
+    const char *env = getenv("DROIDDECK_PRESENT_WAIT");
+    if (env && env[0] == '1') { g_enabled = 1; put_why("DROIDDECK_PRESENT_WAIT=1", "", 0); return; }
+    if (env && env[0] == '0') { g_enabled = 0; put_why("DROIDDECK_PRESENT_WAIT=0", "", 0); return; }
+    static char comm[64], exe[512], argv0[512], list[4096];
+    read_file("/proc/self/comm", comm, sizeof(comm));
+    long n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    exe[n > 0 ? n : 0] = 0;
+    read_file("/proc/self/cmdline", argv0, sizeof(argv0)); /* the first NUL ends argv[0] */
+    if (!read_file(LIST_PATH, list, sizeof(list))) { put_why("no " LIST_PATH, "", 0); return; }
+    for (char *line = list; *line;) {
+        char *e = line;
+        while (*e && *e != '\n') e++;
+        char *a = line, *b = e;
+        while (a < b && (*a == ' ' || *a == '\t' || *a == '\r')) a++;
+        while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\r')) b--;
+        if (a < b && *a != '#' &&
+            (contains(comm, a, (int)(b - a)) || contains(exe, a, (int)(b - a)) || contains(argv0, a, (int)(b - a)))) {
+            g_enabled = 1;
+            put_why("listed: ", a, (int)(b - a));
+            return;
+        }
+        line = *e ? e + 1 : e;
+    }
+    put_why("not in " LIST_PATH, "", 0);
+}
+
+/* Decided once per process, when its first device is made; said on stderr (the session log). */
+static int enabled(void) {
+    lock();
+    int first = !g_decided;
+    if (first) { g_decided = 1; decide(); }
+    int on = g_enabled;
+    unlock();
+    if (first) {
+        static char comm[64];
+        read_file("/proc/self/comm", comm, sizeof(comm));
+        char line[300], *p = line;
+        const char *head = on ? "[present-wait] on for " : "[present-wait] off for ";
+        while (*head) *p++ = *head++;
+        for (const char *c = comm; *c && *c != '\n' && p < line + 80; c++) *p++ = *c;
+        *p++ = ' '; *p++ = '(';
+        for (const char *c = g_why; *c && p < line + 290; c++) *p++ = *c;
+        *p++ = ')'; *p++ = '\n';
+        write_out(line, (unsigned long)(p - line));
+    }
+    return on;
+}
+
 /* ---- what the wait costs, said every 10 s on stderr (the session log) ----
  * "waited" is how long a present was held for its frame's GPU work: the time the frame would
  * otherwise have reached the compositor unfinished. The libc calls resolve at load time. */
@@ -227,6 +324,7 @@ struct pw_timespec { long tv_sec; long tv_nsec; };
 extern int clock_gettime(int clock, struct pw_timespec *ts);
 extern long write(int fd, const void *buf, unsigned long n);
 extern int getpid(void);
+static long write_out(const char *s, unsigned long n) { return write(2, s, n); }
 
 static long long now_ns(void) {
     struct pw_timespec ts;
@@ -352,7 +450,10 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL pw_GetDeviceProcAddr(VkDevice de
     if (!gdpa) return 0;
     if (str_eq(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)pw_GetDeviceProcAddr;
     if (str_eq(name, "vkDestroyDevice")) return (PFN_vkVoidFunction)pw_DestroyDevice;
-    if (str_eq(name, "vkQueuePresentKHR")) return present ? (PFN_vkVoidFunction)pw_QueuePresentKHR : 0;
+    if (str_eq(name, "vkQueuePresentKHR")) {
+        if (!present) return 0;
+        return enabled() ? (PFN_vkVoidFunction)pw_QueuePresentKHR : (PFN_vkVoidFunction)present;
+    }
     return gdpa(device, name);
 }
 

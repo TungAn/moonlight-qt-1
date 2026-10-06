@@ -16,10 +16,18 @@ jobs:
           JSON
       - name: vulkaninfo with the layer
         run: VK_LOADER_DEBUG=layer vulkaninfo --summary 2>&1 | grep -E "present_wait|GPU|deviceName|ERROR" | head -30
-      - name: vkcube presents through the layer (xcb on Xvfb, lavapipe)
+      - name: not listed -> off
         run: |
-          VK_LOADER_DEBUG=layer timeout 120 xvfb-run -a vkcube --c 9000 > out.txt 2>&1; echo "exit=$?"
-          grep -E "present-wait|Insert instance layer|ERROR|rror" out.txt | head -20
-      - name: same without the layer (baseline)
+          timeout 120 xvfb-run -a vkcube --c 3000 2>&1 | grep "present-wait" | head -3
+      - name: listed in the file -> on
         run: |
-          DROIDDECK_PRESENT_WAIT=0 timeout 120 xvfb-run -a vkcube --c 2000 2>&1 | grep -c present-wait || echo "layer off - no reports, as expected"
+          sudo mkdir -p /storage/emulated/0/Download && sudo chmod -R 777 /storage
+          printf '# test\nsomething-else\n  VKCUBE  \n' > /storage/emulated/0/Download/droiddeck-present-wait.txt
+          timeout 120 xvfb-run -a vkcube --c 9000 2>&1 | grep "present-wait" | head -3
+      - name: env 1 -> on for everything
+        run: |
+          rm -f /storage/emulated/0/Download/droiddeck-present-wait.txt
+          DROIDDECK_PRESENT_WAIT=1 timeout 120 xvfb-run -a vkcube --c 9000 2>&1 | grep "present-wait" | head -3
+      - name: env 0 -> layer not loaded
+        run: |
+          DROIDDECK_PRESENT_WAIT=0 VK_LOADER_DEBUG=layer timeout 120 xvfb-run -a vkcube --c 300 2>&1 | grep -c "present_wait" || echo "not loaded, as expected"
