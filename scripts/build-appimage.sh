@@ -67,9 +67,14 @@ pushd $INSTALLER_FOLDER
 # The Vulkan loader must come from the host so it matches the host's drivers and
 # implicit layers. With our bundled loader, Gamescope's WSI layer segfaults on the
 # first vkCreateXcbSurfaceKHR(), so Moonlight crashed at startup inside Gamescope.
+# Qt's Wayland platform plugin rides along so the UI can run as a plain Wayland client (no X
+# server: a compositor that is not gamescope). libwayland-* is left to the host for the reason
+# given at qmake above - the host's EGL and Vulkan drivers need the host's newer libwayland.
+EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so;libqwayland-egl.so" \
 VERSION=$VERSION $LINUXDEPLOY --appdir $DEPLOY_FOLDER \
   --library=/usr/local/lib/libSDL3.so.0 \
   --exclude-library='libvulkan.so*' \
+  --exclude-library='libwayland-*.so*' \
   --plugin qt --output appimage || fail "linuxdeploy failed!"
 popd
 

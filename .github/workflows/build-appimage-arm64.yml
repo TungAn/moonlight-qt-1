@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - vrr18-arm64-appimage
+      - vrr18-arm64-wayland
   workflow_dispatch:
     inputs:
       ci_version:
@@ -39,7 +40,8 @@ jobs:
             libdbus-1-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libibus-1.0-dev libpulse-dev libudev-dev libx11-dev libxcursor-dev \
             libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev libx11-xcb-dev \
             libxfixes-dev libxtst-dev wayland-protocols libopus-dev libvdpau-dev libgl-dev libpipewire-0.3-dev liburing-dev cmake \
-            build-essential git wget pkg-config autoconf automake libtool ninja-build python3-jinja2 file
+            build-essential git wget pkg-config autoconf automake libtool ninja-build python3-jinja2 file \
+            libwayland-dev libegl-dev qt6-wayland
           sudo pip3 install meson
           mkdir -p dep_root/{bin,include,lib} deps
           echo "DEP_ROOT=$PWD/dep_root" >> "${GITHUB_ENV}"
@@ -78,7 +80,7 @@ jobs:
       - name: Build SDL3
         working-directory: deps/SDL
         run: |
-          cmake -DSDL_KMSDRM=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_INSTALL_DOCS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
+          cmake -DSDL_KMSDRM=OFF -DSDL_WAYLAND=ON -DSDL_TEST_LIBRARY=OFF -DSDL_INSTALL_DOCS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
           cmake --build build -j
           sudo cmake --install build
 
@@ -194,7 +196,7 @@ jobs:
       - name: Upload Binaries
         uses: actions/upload-artifact@v6
         with:
-          name: Moonlight-LinuxAppImage-arm64-${{ env.CI_VERSION }}
+          name: Moonlight-LinuxAppImage-arm64-${{ env.CI_VERSION }}-${{ github.ref_name }}
           path: build/installer-release/*.AppImage
           compression-level: 0
           if-no-files-found: error
