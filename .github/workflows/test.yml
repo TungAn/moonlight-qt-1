@@ -18,8 +18,7 @@ jobs:
         run: VK_LOADER_DEBUG=layer vulkaninfo --summary 2>&1 | grep -E "present_wait|GPU|deviceName|ERROR" | head -30
       - name: vkcube presents through the layer (xcb on Xvfb, lavapipe)
         run: |
-          VK_LOADER_DEBUG=layer timeout 120 xvfb-run -a vkcube --c 300 > out.txt 2>&1; echo "exit=$?"
-          grep -E "present_wait|ERROR|rror" out.txt | head -20
-          grep -q "Insert instance layer \"VK_LAYER_DROIDDECK_present_wait\"" out.txt && echo LAYER_LOADED
+          VK_LOADER_DEBUG=layer timeout 120 xvfb-run -a vkcube --c 2000 > out.txt 2>&1; echo "exit=$?"
+          grep -E "present-wait|Insert instance layer|ERROR|rror" out.txt | head -20
       - name: same without the layer (baseline)
-        run: DROIDDECK_PRESENT_WAIT=0 timeout 120 xvfb-run -a vkcube --c 300; echo "exit=$?"
+        run: DROIDDECK_PRESENT_WAIT=0 timeout 120 xvfb-run -a vkcube --c 2000 2>&1 | grep -c present-wait; echo "exit=$?"

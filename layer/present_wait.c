@@ -220,6 +220,69 @@ static VkFence fence_for(VkQueue queue, struct device_entry *dev) {
     return VK_NULL_HANDLE;
 }
 
+/* ---- what the wait costs, said every 10 s on stderr (the session log) ----
+ * "waited" is how long a present was held for its frame's GPU work: the time the frame would
+ * otherwise have reached the compositor unfinished. The libc calls resolve at load time. */
+struct pw_timespec { long tv_sec; long tv_nsec; };
+extern int clock_gettime(int clock, struct pw_timespec *ts);
+extern long write(int fd, const void *buf, unsigned long n);
+extern int getpid(void);
+
+static long long now_ns(void) {
+    struct pw_timespec ts;
+    clock_gettime(1 /* CLOCK_MONOTONIC */, &ts);
+    return (long long)ts.tv_sec * 1000000000ll + ts.tv_nsec;
+}
+
+static char *put_str(char *p, const char *s) { while (*s) *p++ = *s++; return p; }
+static char *put_uint(char *p, unsigned long long v) {
+    char tmp[24];
+    int n = 0;
+    do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) *p++ = tmp[--n];
+    return p;
+}
+static char *put_ms(char *p, long long ns) { /* milliseconds with two decimals */
+    if (ns < 0) ns = 0;
+    long long hundredths = (ns + 5000) / 10000;
+    p = put_uint(p, (unsigned long long)(hundredths / 100));
+    *p++ = '.';
+    *p++ = (char)('0' + hundredths / 10 % 10);
+    *p++ = (char)('0' + hundredths % 10);
+    return p;
+}
+
+static struct { long long since, total, max; unsigned n, over_4ms; } g_stat;
+
+static void stat_add(long long waited) {
+    lock();
+    long long t = now_ns();
+    if (!g_stat.since) g_stat.since = t;
+    g_stat.n++;
+    g_stat.total += waited;
+    if (waited > g_stat.max) g_stat.max = waited;
+    if (waited > 4000000) g_stat.over_4ms++;
+    int report = t - g_stat.since >= 10000000000ll;
+    unsigned n = g_stat.n, over = g_stat.over_4ms;
+    long long total = g_stat.total, max = g_stat.max;
+    if (report) { g_stat.since = t; g_stat.n = 0; g_stat.total = 0; g_stat.max = 0; g_stat.over_4ms = 0; }
+    unlock();
+    if (!report || !n) return;
+    char line[200], *p = line;
+    p = put_str(p, "[present-wait] pid ");
+    p = put_uint(p, (unsigned long long)getpid());
+    p = put_str(p, ", last 10 s: ");
+    p = put_uint(p, n);
+    p = put_str(p, " presents, held for their GPU work avg ");
+    p = put_ms(p, total / n);
+    p = put_str(p, " ms, max ");
+    p = put_ms(p, max);
+    p = put_str(p, " ms, over 4 ms: ");
+    p = put_uint(p, over);
+    *p++ = '\n';
+    write(2, line, (unsigned long)(p - line));
+}
+
 #define MAX_WAITS 16
 
 static VKAPI_ATTR VkResult VKAPI_CALL pw_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info) {
@@ -246,7 +309,9 @@ static VKAPI_ATTR VkResult VKAPI_CALL pw_QueuePresentKHR(VkQueue queue, const Vk
     VkResult r = dev.submit(queue, 1, &si, fence);
     if (r != VK_SUCCESS) return dev.present(queue, info);
     /* Bounded: a hung frame is shown as it stands rather than hanging the program. */
+    long long t0 = now_ns();
     r = dev.wait_fences(dev.device, 1, &fence, VK_TRUE, 1000000000ull);
+    stat_add(now_ns() - t0);
     if (r == VK_ERROR_DEVICE_LOST) return r;
     dev.reset_fences(dev.device, 1, &fence);
     if (r != VK_SUCCESS) {
