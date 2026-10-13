@@ -2,9 +2,8 @@
 
 <p align="center"><img src="assets/icon.png" alt="Pyrolight" width="160"></p>
 
-<p>
-    <a href="https://github.com/karsyboy/pyrolight/actions/workflows/release.yml">
-        <img src="https://github.com/karsyboy/pyrolight/actions/workflows/release.yml/badge.svg"></a>
+<p align="center">
+  <a href="https://github.com/karsyboy/pyrolight/actions/workflows/release.yml"><img src="https://github.com/karsyboy/pyrolight/actions/workflows/release.yml/badge.svg" alt="Release status"></a>
 </p>
 
 Pyrolight is a game-streaming client based on
@@ -22,12 +21,14 @@ Moonlight's standard codecs and features and adds an explicitly selected
 - Native Wayland on Linux, with automatic fallback to X11/XWayland. **Settings →
   Advanced Settings → Display backend** shows which one is in use; see
   [Linux display backends](docs/LINUX_DISPLAY.md).
-- Native model metadata for Xbox Elite, classic Steam Controller, Steam Deck and DualSense Edge on matching Pyroshine hosts; see [controller support and limits](docs/NATIVE_CONTROLLERS.md).
-- Improved audio quality selection when using with a pyroshine host.
+- Native model metadata for Xbox Elite, classic Steam Controller, Steam Deck,
+  and DualSense Edge on matching Pyroshine hosts; see
+  [controller support and limits](docs/NATIVE_CONTROLLERS.md).
+- Selectable audio quality with Pyroshine hosts, including higher-bitrate
+  stereo and surround sound.
 
-PyroWave is an intra-only wavelet codec with very low GPU encode and decode
-latency, designed for high-bandwidth local networks. It is never selected
-automatically.
+PyroWave is an intra-only wavelet codec designed for high-bandwidth local
+networks. Select it explicitly in Settings; it is never selected automatically.
 
 ## Requirements
 
@@ -56,8 +57,9 @@ Download the file for your system from the
 | Other Linux | `*-linux-x86_64.AppImage` | `chmod +x pyrolight-*.AppImage`, then run it |
 
 To upgrade, install the newer release the same way; with the pacman repository,
-`sudo pacman -Syu` upgrades `pyrolight-bin` with the rest of the system. After installing a Linux
-package, start **Pyrolight** from the application menu or run `pyrolight`.
+`sudo pacman -Syu` upgrades `pyrolight-bin` with the rest of the system. After
+installing a Linux package, start **Pyrolight** from the application menu or run
+`pyrolight`.
 
 - The Linux packages need Ubuntu 22.04, Debian 12, Fedora, RHEL 10, Arch or
   newer (glibc 2.35). They replace an installed `moonlight-qt`; its settings and
@@ -65,6 +67,22 @@ package, start **Pyrolight** from the application menu or run `pyrolight`.
 - Each release includes `SHA256SUMS` for checking downloads.
 - Pyrolight does not check for updates; watch the releases page. macOS, Steam
   Link, ARM, Snap, and Flatpak builds are not published.
+
+## Quick start
+
+1. Install Pyrolight using the [installation options above](#installation),
+   then open it from the application menu or run the portable executable.
+2. Select your host in Pyrolight to start pairing. If it is missing, add its
+   LAN or VPN IP manually.
+3. Approve the PIN on the host. For Pyroshine, follow its
+   [pairing guide](https://github.com/karsyboy/pyroshine#3-pair); other hosts
+   use their own pairing workflow.
+4. Select a game or application from the host's list to start streaming.
+   Adjust resolution, frame rate, and bitrate in **Settings** for your display
+   and network.
+
+For Pyroshine hosts, quit Steam on the host's local desktop before launching
+streamed Steam. To use PyroWave, select it explicitly as described below.
 
 ## Streaming with PyroWave
 
@@ -86,8 +104,8 @@ From the command line, pass the same options to the AppImage or `Pyrolight.exe`:
 ```
 
 PyroWave accepts up to 2,000,000 Kbps and 240 FPS, provided each encoded frame
-budget stays between 1 KiB and 3 MiB. Unsupported host capabilities, devices,
-or frame budgets fail with an error instead of falling back to another codec.
+budget stays between 1 KiB and 3 MiB. Unsupported host capabilities, devices, or
+frame budgets fail with an error instead of falling back to another codec.
 
 ## Variable refresh rate (VRR)
 
@@ -95,11 +113,11 @@ On a VRR display, enable **V-Sync** and **Variable refresh rate (VRR)** in
 Settings, and enable adaptive sync for the display in your compositor (on KDE
 Plasma: **Adaptive sync** set to **Automatic** or **Always**). Pick a **VRR
 timing** mode (**Smoothest**, **Balanced** or **Lowest latency**); the frame
-rate list suggests VRR rates just below the refresh rate, such as 116 FPS at
-120 Hz; use one of these rather than the full refresh rate, which leaves the
-display no room to follow the game and causes periodic stutter. VRR currently requires Linux and the Vulkan renderer; when a
-requirement is not met, the performance overlay shows why. See
-[VRR presentation](docs/VRR.md) for details.
+rate list suggests VRR rates just below the refresh rate, such as 116 FPS at 120
+Hz; use one of these rather than the full refresh rate, which leaves the display
+no room to follow the game and causes periodic stutter. VRR currently requires
+Linux and the Vulkan renderer; when a requirement is not met, the performance
+overlay shows why. See [VRR presentation](docs/VRR.md) for details.
 
 ## Audio quality
 
@@ -116,9 +134,9 @@ stream Moonlight's usual audio.
 The **Streaming Profile** section of Settings creates, duplicates, renames,
 deletes, and switches between named profiles. A profile stores stream settings
 such as resolution, frame rate, bitrate, codec, HDR, YUV 4:4:4, V-Sync, frame
-pacing, VRR settings, audio configuration and quality, window mode, decoder, and renderer. Input, interface,
-and language settings stay global. Settings from before profiles existed become
-the **Default** profile.
+pacing, VRR settings, audio configuration and quality, window mode, decoder, and
+renderer. Input, interface, and language settings stay global. Settings from
+before profiles existed become the **Default** profile.
 
 ## Troubleshooting
 
@@ -144,9 +162,10 @@ the **Default** profile.
   [Moonlight troubleshooting guide](https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting),
   and compare with H.264, HEVC, or AV1 to isolate PyroWave-specific issues.
 
-When reporting a bug, include the release, OS, GPU and driver, host version,
-stream settings, and client and host logs. On Windows, client logs are in
-`%TEMP%`; on Linux, run the AppImage from a terminal and capture its output.
+When [reporting a bug](https://github.com/karsyboy/pyrolight/issues), include
+the release, OS, GPU and driver, host version, stream settings, and client and
+host logs. On Windows, client logs are in `%TEMP%`; on Linux, run the AppImage
+from a terminal and capture its output.
 
 ## Documentation
 
@@ -161,17 +180,18 @@ stream settings, and client and host logs. On Windows, client logs are in
 
 ## License and credits
 
-Pyrolight is an independent community fork of
-[Moonlight Qt](https://github.com/moonlight-stream/moonlight-qt) and is not an
-official Moonlight or PyroWave project. It periodically merges upstream client
-changes. Its `moonlight-common-c` submodule points to the
+Pyrolight is an independent community fork of [Moonlight
+Qt](https://github.com/moonlight-stream/moonlight-qt) and is not an official
+Moonlight or PyroWave project. It periodically merges upstream client changes.
+Its `moonlight-common-c` submodule points to the
 [`karsyboy/moonlight-common-c`](https://github.com/karsyboy/moonlight-common-c)
 fork, which carries the PyroWave and controller protocol extensions. The codec
 is the pinned [`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) fork
 of [Themaister's PyroWave](https://github.com/Themaister/pyrowave).
 
 VRR presentation is based on [Nonary](https://github.com/Nonary)'s idea and
-reference implementations in [moonlight-qt](https://github.com/Nonary/moonlight-qt)
+reference implementations in
+[moonlight-qt](https://github.com/Nonary/moonlight-qt)
 ([moonlight-stream/moonlight-qt#1956](https://github.com/moonlight-stream/moonlight-qt/pull/1956))
 and [Vibepollo](https://github.com/Nonary/Vibepollo).
 
