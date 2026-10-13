@@ -178,6 +178,12 @@ from a terminal and capture its output.
 - [Building, testing, and releasing](CONTRIBUTING.md)
 - [Upstream Moonlight documentation](https://github.com/moonlight-stream/moonlight-docs/wiki)
 
+## AI-assisted development
+
+AI coding tools, including Codex, assist implementation, testing and documentation.
+The maintainer directs the project. All changes require the same review,
+validation and security standards, whether written by a human or with AI assistance.
+
 ## License and credits
 
 Pyrolight is an independent community fork of [Moonlight
