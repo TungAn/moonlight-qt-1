@@ -37,7 +37,7 @@ Related repositories:
 | `app/streaming/video/pyrowave*.{h,cpp}` | PyroWave decoder, native frame and color rules, record-framed adapter |
 | `app/streaming/video/ffmpeg-renderers/plvk.*` | libplacebo Vulkan renderer shared with the PyroWave decoder; Linux VRR presenter |
 | `app/streaming/video/ffmpeg-renderers/pacer/vrr*`, `pacer/vrr/`, `app/streaming/vrrratepolicy.*` | VRR timing controller, pacing worker, diagnostics and stream-rate choices |
-| `app/streaming/input/gamepad.cpp`, `gamepadidentity.h` | Controller arrival, button mapping, DualSense Edge identity |
+| `app/streaming/input/gamepad.cpp`, `gamepadidentity.h`, `gamepadfeedback.h` | Controller arrival, button mapping, DualSense Edge identity, host feedback slot bounds |
 | `app/settings/streamingpreferences.*`, `bitratecalculator.h` | Preferences, streaming profiles, PyroWave availability and default bitrate |
 | `app/backend/networkbuffers.*`, `pyrowavecalibrator.*`, `pyrowavebandwidth.h`, `nvhttp.cpp` | Receive-buffer diagnostics/remediation, bandwidth calibration, HTTPS probe |
 | `app/gui/SettingsView.qml` | Settings UI, including profiles, PyroWave and network tools |

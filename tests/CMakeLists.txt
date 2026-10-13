@@ -14,6 +14,16 @@ target_compile_features(gamepad-capabilities PRIVATE cxx_std_11)
 target_include_directories(gamepad-capabilities PRIVATE ../app ../moonlight-common-c/moonlight-common-c/src)
 add_test(NAME gamepad-capabilities COMMAND gamepad-capabilities)
 
+add_executable(gamepad-feedback gamepad_feedback.cpp)
+target_compile_features(gamepad-feedback PRIVATE cxx_std_11)
+target_include_directories(gamepad-feedback PRIVATE ../app)
+# Host-controlled slot indices: out-of-bounds reads must fail the test.
+if(NOT MSVC)
+    target_compile_options(gamepad-feedback PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=all)
+    target_link_options(gamepad-feedback PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME gamepad-feedback COMMAND gamepad-feedback)
+
 pkg_check_modules(PLACEBO REQUIRED IMPORTED_TARGET libplacebo)
 add_executable(pyrowave-color pyrowave_color.cpp)
 target_compile_features(pyrowave-color PRIVATE cxx_std_11)
