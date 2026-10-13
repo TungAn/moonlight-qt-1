@@ -120,8 +120,10 @@ jobs:
           # A build without PyroWave must keep compiling (AGENTS.md).
           - name: standard codecs
             pyrowave: false
+          # LunarG's libvulkan-dev ships no headers; they are a separate package.
           - name: PyroWave
             pyrowave: true
+            packages: vulkan-headers
     steps:
       - name: Check out Pyrolight
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -157,7 +159,7 @@ jobs:
             libssl-dev libsdl2-dev libsdl2-ttf-dev libopus-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
             libva-dev libvdpau-dev libdrm-dev libplacebo-dev libvulkan-dev \
-            libwayland-dev libx11-dev libegl-dev libgl-dev
+            libwayland-dev libx11-dev libegl-dev libgl-dev ${{ matrix.packages }}
 
       - name: Build PyroWave
         if: matrix.pyrowave
