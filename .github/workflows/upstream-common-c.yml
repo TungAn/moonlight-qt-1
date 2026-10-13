@@ -1,0 +1,98 @@
+---
+name: Watch upstream moonlight-common-c
+
+# The moonlight-common-c submodule points at the karsyboy fork. Upstream
+# changes must be merged into that fork before the submodule can move, so a
+# pull request here is not possible: this keeps one tracking issue listing the
+# upstream commits the pinned submodule commit lacks, and closes it once the
+# pin includes them. Merging is a reviewed change (see AGENTS.md).
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-common-c
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Compare the submodule pin with upstream
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SUBMODULE: moonlight-common-c/moonlight-common-c
+      FORK: https://github.com/karsyboy/moonlight-common-c
+      UPSTREAM_REPO: moonlight-stream/moonlight-common-c
+      UPSTREAM_BRANCH: master
+      ISSUE_TITLE: Upstream moonlight-common-c has commits the submodule lacks
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Compare and report
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin="$(git ls-tree HEAD "${SUBMODULE}" | awk '{print $3}')"
+          [[ "${pin}" =~ ^[0-9a-f]{40}$ ]] || { echo "error: no submodule pin for ${SUBMODULE}" >&2; exit 1; }
+
+          repo="${RUNNER_TEMP}/common-c.git"
+          git clone --quiet --bare --filter=blob:none "${FORK}" "${repo}"
+          git -C "${repo}" fetch --quiet --filter=blob:none \
+            "https://github.com/${UPSTREAM_REPO}" "+refs/heads/${UPSTREAM_BRANCH}:refs/upstream/head"
+          head="$(git -C "${repo}" rev-parse refs/upstream/head)"
+          missing="$(git -C "${repo}" rev-list --count --no-merges "${pin}..${head}")"
+          ahead="$(git -C "${repo}" rev-list --count --no-merges "${head}..${pin}")"
+          echo "Pin ${pin}: ${missing} upstream commit(s) missing, ${ahead} fork commit(s) not upstream."
+
+          issue="$(gh issue list --state open --limit 200 --json number,title \
+            --jq ".[] | select(.title == \"${ISSUE_TITLE}\") | .number" | head -n1)"
+
+          if [[ "${missing}" == 0 ]]; then
+            if [[ -n "${issue}" ]]; then
+              gh issue close "${issue}" --comment "The submodule pin \`${pin:0:12}\` now includes upstream \`${UPSTREAM_BRANCH}\` (\`${head:0:12}\`)."
+            fi
+            exit 0
+          fi
+
+          marker="<!-- upstream-head: ${head} -->"
+          if [[ -n "${issue}" ]] && gh issue view "${issue}" --json body --jq .body | grep -qF "${marker}"; then
+            echo "Issue #${issue} already reports upstream ${head}."
+            exit 0
+          fi
+
+          # Commit subjects go in a code block so upstream "#123" references
+          # and @mentions do not link to this repository or notify anyone.
+          {
+            echo "${marker}"
+            printf 'Upstream [`%s`](https://github.com/%s/tree/%s) is at `%s`. ' \
+              "${UPSTREAM_REPO}" "${UPSTREAM_REPO}" "${UPSTREAM_BRANCH}" "${head:0:12}"
+            printf 'The `%s` submodule is pinned to fork commit `%s`, which lacks **%s** upstream commit(s) ' \
+              "${SUBMODULE}" "${pin:0:12}" "${missing}"
+            printf '(the fork carries %s commit(s) of its own).\n\n' "${ahead}"
+            printf 'Compare: %s/compare/%s...%s:%s\n\n' \
+              "${FORK}" "${pin}" "${UPSTREAM_REPO/\//:}" "${UPSTREAM_BRANCH}"
+            echo '```'
+            git -C "${repo}" log --no-merges --format='%h %ad %s' --date=short "${pin}..${head}" | head -n 100
+            echo '```'
+            printf '\nTo take these: review them per the upstream synchronization policy in `AGENTS.md`, '
+            printf 'merge upstream into the fork (`karsyboy/moonlight-common-c`), then update the submodule pin here. '
+            printf 'This issue closes itself once the pin includes upstream.\n\n'
+            printf '_Maintained by the Watch upstream moonlight-common-c workflow._\n'
+          } > "${RUNNER_TEMP}/body.md"
+
+          if [[ -n "${issue}" ]]; then
+            gh issue edit "${issue}" --body-file "${RUNNER_TEMP}/body.md"
+            gh issue comment "${issue}" --body "Upstream advanced to \`${head:0:12}\`; ${missing} commit(s) are now missing from the pin."
+          else
+            gh issue create --title "${ISSUE_TITLE}" --body-file "${RUNNER_TEMP}/body.md"
+          fi

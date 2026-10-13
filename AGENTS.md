@@ -49,7 +49,7 @@ Related repositories:
 | `scripts/build-pyrowave-appimage.sh` | Pinned PyroWave AppImage build |
 | `scripts/build-appimage.sh`, `scripts/check-appimage-display-backends.sh`, `app/deploy/linux/*-probe.c` | AppImage packaging, host-library probes and packaging checks |
 | `scripts/build-linux-packages.sh`, `app/deploy/linux/nfpm.yaml`, `scripts/check-linux-icons.sh` | `.deb`/`.rpm`/Arch packages built from the AppImage payload; Linux icon checks |
-| `.github/workflows/` | `release.yml` (tag-triggered Windows and Linux release; starts the pacman repository update) and `build-appimage.yml` |
+| `.github/workflows/` | `release.yml` (tag-triggered Windows and Linux release; starts the pacman repository update), `build-appimage.yml`, and `upstream-common-c.yml` (daily upstream common-c watch) |
 | `wix/`, `app/deploy/`, `scripts/` | Upstream packaging, with fork branding |
 
 Everything else under `app/` is upstream Moonlight code.
@@ -191,6 +191,9 @@ moonlight-qt master (v6.2.0)"). The `moonlight-common-c` submodule's upstream is
 [moonlight-stream/moonlight-common-c](https://github.com/moonlight-stream/moonlight-common-c);
 `qmdnsengine` and `SDL_GameControllerDB` are unmodified upstream submodules.
 Verify remotes with `git remote -v` and `.gitmodules` rather than assuming.
+Dependabot (`.github/dependabot.yml`) proposes submodule and action updates;
+`.github/workflows/upstream-common-c.yml` keeps an issue open listing upstream
+common-c commits the submodule pin lacks. Neither applies upstream changes.
 
 Staying reasonably compatible with upstream is an ongoing goal. Bug fixes,
 security fixes, performance, compatibility and maintenance improvements, useful
