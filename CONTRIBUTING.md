@@ -125,8 +125,12 @@ for the exact CI sequence.
 
 ## Validation
 
-CI builds release artifacts but does not run the test suites below; run the
-relevant ones locally.
+[CI](.github/workflows/ci.yml) runs the client unit tests, the common-c
+protocol tests and the Qt tests below on every push and pull request. It also
+compile-checks Linux builds with and without PyroWave (plus the renderer smoke
+test) against Ubuntu 24.04 packages, and checks that every copy of the PyroWave
+pin agrees. Run the relevant suites locally before pushing; CI does not run the
+renderer smoke test, the HTTPS harness or a Windows build.
 
 Client unit tests (SDL2 and libplacebo through pkg-config):
 

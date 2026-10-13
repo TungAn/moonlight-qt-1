@@ -1,0 +1,198 @@
+---
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+permissions:
+  contents: read
+
+jobs:
+  pyrowave-pin:
+    name: PyroWave pin
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every workflow builds the same PyroWave revision, and the documents
+      # name it (AGENTS.md: keep the copies identical).
+      - name: Check that every copy of the pin agrees
+        shell: bash
+        run: |
+          set -euo pipefail
+          pins="$(awk '/repository: karsyboy\/pyrowave$/ { want = 1; next }
+                       want && /ref:/ { print $2; want = 0 }' .github/workflows/*.yml | sort -u)"
+          if [[ "$(grep -c . <<<"${pins}")" != 1 || ! "${pins}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Workflows check out different PyroWave revisions:"
+            echo "${pins}"
+            exit 1
+          fi
+          for file in CONTRIBUTING.md docs/PYROWAVE.md; do
+            grep -qF "${pins}" "${file}" || { echo "::error file=${file}::does not name the PyroWave pin ${pins}"; exit 1; }
+          done
+          grep -qF "\`${pins:0:7}\`" AGENTS.md || { echo "::error file=AGENTS.md::does not name the PyroWave pin ${pins:0:7}"; exit 1; }
+          echo "PyroWave pin ${pins} agrees across workflows and documents."
+
+  unit-tests:
+    name: Client unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libsdl2-dev libplacebo-dev
+
+      - name: Build and run
+        run: |
+          cmake -S tests -B build/tests
+          cmake --build build/tests --parallel
+          ctest --test-dir build/tests --output-on-failure
+
+  protocol-tests:
+    name: Protocol tests (moonlight-common-c)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libssl-dev
+
+      - name: Build and run
+        run: |
+          cmake -S moonlight-common-c/moonlight-common-c -B build/common-c-tests \
+            -DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON
+          cmake --build build/common-c-tests --parallel
+          ctest --test-dir build/common-c-tests --output-on-failure
+
+  qt-tests:
+    name: Qt tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qmake6 qt6-base-dev qt6-declarative-dev libqt6svg6-dev
+
+      - name: Build and run
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          for test in streamingpreferences brandtranslator; do
+            qmake6 "app/tests/${test}_test.pro" -o "build/${test}-test/Makefile"
+            make -C "build/${test}-test" -j"$(nproc)"
+            "./build/${test}-test/${test}-test"
+          done
+
+  build:
+    name: Linux build (${{ matrix.name }})
+    # Distribution packages compile-check the application. The release
+    # AppImage (build-appimage.yml) uses its own pinned dependency stack.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # A build without PyroWave must keep compiling (AGENTS.md).
+          - name: standard codecs
+            pyrowave: false
+          - name: PyroWave
+            pyrowave: true
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Check out the patched PyroWave API
+        if: matrix.pyrowave
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: karsyboy/pyrowave
+          ref: 689854dd9727fc2239699c386e69355189fbf332
+          path: deps/PyroWave
+          persist-credentials: false
+
+      # The PyroWave C API uses Vulkan 1.4 types; Ubuntu 24.04 ships 1.3
+      # headers, so use the LunarG SDK version the release build uses.
+      - name: Add the Vulkan SDK repository
+        if: matrix.pyrowave
+        run: |
+          curl -fsSL https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/lunarg-vulkan.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/lunarg-vulkan.gpg] https://packages.lunarg.com/vulkan/1.4.313 noble main' \
+            | sudo tee /etc/apt/sources.list.d/lunarg-vulkan.list >/dev/null
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config qmake6 qt6-base-dev qt6-base-private-dev qt6-declarative-dev libqt6svg6-dev \
+            libssl-dev libsdl2-dev libsdl2-ttf-dev libopus-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libva-dev libvdpau-dev libdrm-dev libplacebo-dev libvulkan-dev \
+            libwayland-dev libx11-dev libegl-dev libgl-dev
+
+      - name: Build PyroWave
+        if: matrix.pyrowave
+        run: |
+          (cd deps/PyroWave && ./checkout_granite.sh)
+          cmake -S deps/PyroWave -B build/pyrowave \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${PWD}/build/pyrowave-install" \
+            -DPYROWAVE_DEVEL=OFF -DPYROWAVE_UTILS=OFF
+          cmake --build build/pyrowave --parallel
+          cmake --install build/pyrowave
+          echo "PKG_CONFIG_PATH=${PWD}/build/pyrowave-install/lib/pkgconfig" >> "${GITHUB_ENV}"
+
+      - name: Build Pyrolight
+        shell: bash
+        run: |
+          set -euo pipefail
+          config=(CONFIG+=release)
+          if [[ "${{ matrix.pyrowave }}" == true ]]; then
+            config+=(CONFIG+=enable-pyrowave)
+          fi
+          mkdir -p build/app
+          cd build/app
+          qmake6 ../../moonlight-qt.pro "${config[@]}"
+          make -j"$(nproc)"
+          if [[ "${{ matrix.pyrowave }}" == true ]]; then
+            readelf -d app/pyrolight | grep -F 'libpyrowave-shared.so.1'
+          fi
+
+      # The smoke test needs a Vulkan display to run; CI keeps it compiling.
+      - name: Build the PyroWave renderer smoke test
+        if: matrix.pyrowave
+        run: |
+          mkdir -p build/smoke
+          cd build/smoke
+          qmake6 ../../moonlight-qt.pro CONFIG+=release CONFIG+=enable-pyrowave CONFIG+=pyrowave-smoke-test
+          make -j"$(nproc)"
+          test -x app/pyrowave-render-smoke

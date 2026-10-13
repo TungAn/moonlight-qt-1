@@ -3,6 +3,7 @@
 <p align="center"><img src="assets/icon.png" alt="Pyrolight" width="160"></p>
 
 <p align="center">
+  <a href="https://github.com/karsyboy/pyrolight/actions/workflows/ci.yml"><img src="https://github.com/karsyboy/pyrolight/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="https://github.com/karsyboy/pyrolight/actions/workflows/release.yml"><img src="https://github.com/karsyboy/pyrolight/actions/workflows/release.yml/badge.svg" alt="Release status"></a>
 </p>
 

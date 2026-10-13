@@ -49,7 +49,7 @@ Related repositories:
 | `scripts/build-pyrowave-appimage.sh` | Pinned PyroWave AppImage build |
 | `scripts/build-appimage.sh`, `scripts/check-appimage-display-backends.sh`, `app/deploy/linux/*-probe.c` | AppImage packaging, host-library probes and packaging checks |
 | `scripts/build-linux-packages.sh`, `app/deploy/linux/nfpm.yaml`, `scripts/check-linux-icons.sh` | `.deb`/`.rpm`/Arch packages built from the AppImage payload; Linux icon checks |
-| `.github/workflows/` | `release.yml` (tag-triggered Windows and Linux release; starts the pacman repository update), `build-appimage.yml`, and `upstream-common-c.yml` (daily upstream common-c watch) |
+| `.github/workflows/` | `ci.yml` (tests and Linux build checks on pushes and pull requests), `release.yml` (tag-triggered Windows and Linux release; starts the pacman repository update), `build-appimage.yml`, and `upstream-common-c.yml` (daily upstream common-c watch) |
 | `wix/`, `app/deploy/`, `scripts/` | Upstream packaging, with fork branding |
 
 Everything else under `app/` is upstream Moonlight code.
@@ -115,10 +115,10 @@ Everything else under `app/` is upstream Moonlight code.
   compatible with upstream-style hosts (Sunshine, GameStream) for standard
   codecs. Capability bits and SDP attributes are shared contracts; change them
   only together with the host and common-c.
-- The PyroWave pin (`689854d`, C API 1.1.0) appears in both workflows,
-  `CONTRIBUTING.md` and `docs/PYROWAVE.md`; keep them identical. The fork
-  carries its own patches. The host may pin a newer revision of the same
-  fork; the bitstream family (`186f0393`) must stay decodable.
+- The PyroWave pin (`689854d`, C API 1.1.0) appears in every workflow,
+  `CONTRIBUTING.md` and `docs/PYROWAVE.md`; keep them identical (CI checks).
+  The fork carries its own patches. The host may pin a newer revision of the
+  same fork; the bitstream family (`186f0393`) must stay decodable.
 - Fork code must compile on Windows (MSVC, `min`/`max` macros) and Linux; tests
   include a Windows-macro build of the frame rules.
 - Changes in `moonlight-common-c` are made in the `karsyboy/moonlight-common-c`
@@ -127,8 +127,9 @@ Everything else under `app/` is upstream Moonlight code.
 
 ## Validation
 
-See [CONTRIBUTING.md](CONTRIBUTING.md#validation) for full commands. CI builds
-release artifacts but does not run tests, so run them locally:
+See [CONTRIBUTING.md](CONTRIBUTING.md#validation) for full commands. CI
+(`ci.yml`) runs the unit, protocol and Qt tests and compile-checks Linux builds
+with and without PyroWave; run the relevant suites locally before pushing:
 
 ```sh
 cmake -S tests -B build/tests && cmake --build build/tests
