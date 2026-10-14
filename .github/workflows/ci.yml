@@ -136,7 +136,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: karsyboy/pyrowave
-          ref: 689854dd9727fc2239699c386e69355189fbf332
+          ref: b09e1365155e91710497be22eac6500f04bf74ea
           path: deps/PyroWave
           persist-credentials: false
 

@@ -115,7 +115,7 @@ Everything else under `app/` is upstream Moonlight code.
   compatible with upstream-style hosts (Sunshine, GameStream) for standard
   codecs. Capability bits and SDP attributes are shared contracts; change them
   only together with the host and common-c.
-- The PyroWave pin (`689854d`, C API 1.1.0) appears in every workflow,
+- The PyroWave pin (`b09e136`, C API 1.1.0) appears in every workflow,
   `CONTRIBUTING.md` and `docs/PYROWAVE.md`; keep them identical (CI checks).
   The fork carries its own patches. The host may pin a newer revision of the
   same fork; the bitstream family (`186f0393`) must stay decodable.

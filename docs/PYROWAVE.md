@@ -118,7 +118,7 @@ live network rate controller.
 
 | Item | Value |
 | --- | --- |
-| Source | [`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) at `689854dd9727fc2239699c386e69355189fbf332` |
+| Source | [`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) at `b09e1365155e91710497be22eac6500f04bf74ea` |
 | C API | `pyrowave-shared` 1.1.0; `app/app.pro` rejects other versions |
 | Granite | `fb178c8080d163419e8d20f10715c61c53c1ec9b` via `checkout_granite.sh` |
 | Bitstream family | `186f0393` |
