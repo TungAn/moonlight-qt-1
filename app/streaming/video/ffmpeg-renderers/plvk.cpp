@@ -1258,6 +1258,27 @@ const char* PlVkRenderer::getVrrPresentModeName()
     return m_VkPresentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "Vulkan Mailbox" : "Vulkan Immediate";
 }
 
+bool PlVkRenderer::restoreSynchronizedPresentation()
+{
+    if (!m_VrrEnabled) {
+        // Already FIFO: VRR was not requested or no adaptive mode was chosen.
+        return true;
+    }
+
+    // The adaptive swapchain (Immediate tears) must not outlive VRR pacing.
+    m_VrrEnabled = false;
+    m_VrrFallback = Vrr::FallbackReason::InitializationFailed;
+    m_VkPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    if (!createSwapchain(m_SwapchainDepth)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "VRR: could not restore FIFO presentation");
+        return false;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "VRR: restored FIFO presentation");
+    return true;
+}
+
 bool PlVkRenderer::vrrPrepareMappedFrame(pl_frame& mappedFrame, bool& retainsSource)
 {
     retainsSource = false;

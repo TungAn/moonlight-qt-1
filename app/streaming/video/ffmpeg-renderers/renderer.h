@@ -322,6 +322,15 @@ public:
         return "none";
     }
 
+    // VRR was requested but will not be used (its presenter or worker could
+    // not start): return to the synchronized presentation a non-VRR session
+    // uses. Called after every VRR worker has stopped and before any frame is
+    // presented. Returns false when that is impossible; the caller must then
+    // fail initialization rather than present unsynchronized.
+    virtual bool restoreSynchronizedPresentation() {
+        return true;
+    }
+
     virtual void prepareToRender() {
         // Allow renderers to perform any final preparations for
         // rendering after they have been selected to render. Such

@@ -1,9 +1,11 @@
 #include "streaming/video/pyrowave.h"
+#include "streaming/video/ffmpeg-renderers/plvk.h"
 #include <PyroWave.h>
 #include <QCoreApplication>
 #include <SDL_vulkan.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <QAtomicInt>
 #include <fstream>
 QAtomicInt g_AsyncLoggingEnabled {0};
@@ -87,12 +89,33 @@ public:
         return true;
     }
 };
+// A renderer prepared for VRR presentation (adaptive swapchain) must return
+// to FIFO when VRR pacing cannot start, as a non-VRR session presents.
+static bool vrrFallbackRestoresFifo(SDL_Window *window) {
+    PlVkRenderer renderer;
+    DECODER_PARAMETERS params {};
+    params.window = window; params.videoFormat = VIDEO_FORMAT_PYROWAVE;
+    params.width = params.height = 64; params.frameRate = 60;
+    params.enableVsync = true; params.vrr.enabled = true; params.vrr.displayRefreshHz = 60;
+    REQUIRE(renderer.initialize(&params));
+    Vrr::PresentProtection protection; Vrr::FallbackReason reason;
+    const bool adaptive = renderer.getVrrPresenter(&protection, &reason) != nullptr;
+    REQUIRE(renderer.restoreSynchronizedPresentation());
+    REQUIRE(renderer.getVrrPresenter(&protection, &reason) == nullptr);
+    REQUIRE(reason == (adaptive ? Vrr::FallbackReason::InitializationFailed
+                                : Vrr::FallbackReason::NoAdaptivePresentMode));
+    REQUIRE(strcmp(renderer.getVrrPresentModeName(), "none") == 0);
+    REQUIRE(renderer.restoreSynchronizedPresentation()); // Idempotent.
+    printf("VRR fallback restored FIFO presentation (%s swapchain before)\n", adaptive ? "adaptive" : "FIFO");
+    return true;
+}
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     SDL_LogSetAllPriority(SDL_LOG_PRIORITY_INFO);
     if (SDL_Init(SDL_INIT_VIDEO) || SDL_Vulkan_LoadLibrary(nullptr)) return 2;
     SDL_Window *window = SDL_CreateWindow("PyroWave renderer test", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 256, 256, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
     if (!window) { fprintf(stderr, "%s\n", SDL_GetError()); return 2; }
+    if (!vrrFallbackRestoresFifo(window)) return 1;
     for (int extent : {64, 128}) for (int chroma : {VIDEO_FORMAT_PYROWAVE, VIDEO_FORMAT_PYROWAVE_444}) for (int hdr : {0, VIDEO_FORMAT_PYROWAVE_HDR}) {
         if (!PyroWaveDecoderSmokeTest::run(window, chroma | hdr, extent)) return 1;
     }

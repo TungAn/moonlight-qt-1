@@ -64,9 +64,12 @@ Vulkan renderer). A qualified session prefers the Vulkan renderer (also for
 the startup probe, so the color range negotiated with the host matches
 playback), streams in desktop fullscreen even when the saved mode is windowed,
 and sends `clientVrrRequested=1`. The renderer must then offer an adaptive
-present mode; otherwise the session keeps synchronized presentation with
-classic frame pacing, enabled even if the frame pacing checkbox is off. The
-log and the performance overlay name the reason. A renderer recreated after a
+present mode and the pacing worker (and, for PyroWave, the decode thread) must
+start; otherwise the session keeps synchronized presentation with classic
+frame pacing, enabled even if the frame pacing checkbox is off. A renderer
+that already created its adaptive swapchain recreates it with FIFO first, and
+the stream fails to start if it cannot. The log and the performance overlay
+name the reason. A renderer recreated after a
 display change is requalified against the new display's refresh rate.
 
 ## Timing model

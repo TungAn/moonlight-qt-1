@@ -70,6 +70,7 @@ public:
     Vrr::IFramePresenter* getVrrPresenter(Vrr::PresentProtection* protection,
                                           Vrr::FallbackReason* reason) override;
     const char* getVrrPresentModeName() override;
+    bool restoreSynchronizedPresentation() override;
     Vrr::PrepareResult vrrPrepare(void* payload, bool latched) override;
     Vrr::PresentResult vrrPresent(bool latched) override;
     void vrrCancel() override;

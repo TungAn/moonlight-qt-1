@@ -311,7 +311,11 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing,
             m_VrrFallback = Vrr::FallbackReason::InitializationFailed;
         }
         // A requested VRR session that cannot present adaptively keeps
-        // synchronized presentation with classic pacing.
+        // synchronized presentation with classic pacing, never the adaptive
+        // swapchain the renderer prepared for VRR.
+        if (!m_VsyncRenderer->restoreSynchronizedPresentation()) {
+            return false;
+        }
         enablePacing = true;
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "VRR presentation unavailable (%s); using fixed frame pacing",

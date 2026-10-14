@@ -286,6 +286,11 @@ bool PyroWaveVideoDecoder::initialize(PDECODER_PARAMETERS params)
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "PyroWave VRR presentation unavailable (%s); presenting on decode",
                             Vrr::fallbackReasonName(m_VrrFallback));
+                // The workers are stopped; present synchronized, not on the
+                // adaptive swapchain prepared for VRR.
+                if (!m_Renderer->restoreSynchronizedPresentation()) {
+                    return false;
+                }
             }
         }
         if (!m_VrrWorker) {
