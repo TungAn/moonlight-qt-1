@@ -150,6 +150,12 @@ jobs:
           path: release-assets/*
           if-no-files-found: error
 
+  # The CI suites (pin check, unit, protocol and Qt tests, Linux builds) on
+  # the tagged revision itself; publishing waits for them.
+  tests:
+    name: Tests
+    uses: ./.github/workflows/ci.yml
+
   linux:
     name: Linux x86_64 AppImage and packages
     needs: version
@@ -162,6 +168,7 @@ jobs:
     name: Publish GitHub release
     needs:
       - version
+      - tests
       - windows
       - linux
     runs-on: ubuntu-latest

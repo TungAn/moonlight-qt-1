@@ -49,7 +49,7 @@ Related repositories:
 | `scripts/build-pyrowave-appimage.sh` | Pinned PyroWave AppImage build |
 | `scripts/build-appimage.sh`, `scripts/check-appimage-display-backends.sh`, `app/deploy/linux/*-probe.c` | AppImage packaging, host-library probes and packaging checks |
 | `scripts/build-linux-packages.sh`, `app/deploy/linux/nfpm.yaml`, `scripts/check-linux-icons.sh` | `.deb`/`.rpm`/Arch packages built from the AppImage payload; Linux icon checks |
-| `.github/workflows/` | `ci.yml` (tests and Linux build checks on pushes and pull requests), `release.yml` (tag-triggered Windows and Linux release; starts the pacman repository update), `build-appimage.yml`, and `upstream-common-c.yml` (daily upstream common-c watch) |
+| `.github/workflows/` | `ci.yml` (tests and Linux build checks on pushes and pull requests), `release.yml` (tag-triggered Windows and Linux release, published only after `ci.yml` passes on the tag; starts the pacman repository update), `build-appimage.yml`, and `upstream-common-c.yml` (daily upstream common-c watch) |
 | `wix/`, `app/deploy/`, `scripts/` | Upstream packaging, with fork branding |
 
 Everything else under `app/` is upstream Moonlight code.

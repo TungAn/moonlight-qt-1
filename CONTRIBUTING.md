@@ -229,7 +229,8 @@ git push origin vX.Y.Z
 ```
 
 The [release workflow](.github/workflows/release.yml) derives the application
-version from the tag, builds the Windows installer and portable ZIP and the
+version from the tag, runs the [CI](.github/workflows/ci.yml) suites on the
+tagged revision, builds the Windows installer and portable ZIP and the
 Linux AppImage against the pinned PyroWave revision, verifies the PyroWave
-runtime is bundled, and publishes a GitHub Release with `SHA256SUMS` and
-generated notes. Test installation of each asset afterwards.
+runtime is bundled, and, only after the tests pass, publishes a GitHub Release
+with `SHA256SUMS` and generated notes. Test installation of each asset afterwards.
