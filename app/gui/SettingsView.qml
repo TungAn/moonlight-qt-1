@@ -2066,6 +2066,18 @@ Flickable {
                         Button { text: qsTr("Recheck"); enabled: !networkBuffers.busy; onClicked: networkBuffers.refresh() }
                     }
                     Label { width: parent.width; text: networkBuffers.message; visible: text.length > 0; wrapMode: Text.Wrap }
+                }
+
+                // Bandwidth calibration works for every codec on Pyroshine hosts
+                // (UDP); older PyroWave hosts fall back to the HTTPS probe.
+                Column {
+                    width: parent.width
+                    spacing: 8
+                    Label {
+                        width: parent.width
+                        text: qsTr("Measure how much video the network to a host carries without loss. The test uses this profile's frame rate, packet size and codec, and never changes your bitrate unless you apply the result.")
+                        wrapMode: Text.Wrap
+                    }
                     AutoResizingComboBox {
                         id: calibrationHost
                         width: parent.width
@@ -2086,7 +2098,7 @@ Flickable {
                     }
                     Label { width: parent.width; text: networkCalibration.message; wrapMode: Text.Wrap }
                     Button {
-                        text: qsTr("Use recommended ceiling")
+                        text: qsTr("Use recommended bitrate")
                         enabled: networkCalibration.ceilingKbps > 0 && !networkCalibration.running
                         onClicked: {
                             StreamingPreferences.autoAdjustBitrate = false

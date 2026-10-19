@@ -650,8 +650,8 @@ libva-wayland:dlopen-libva-wayland {
     LIBS += -ldl
 }
 
-SOURCES += backend/networkbuffers.cpp backend/pyrowavecalibrator.cpp displaybackend.cpp
-HEADERS += backend/networkbuffers.h backend/pyrowavecalibrator.h backend/pyrowavebandwidth.h displaybackend.h
+SOURCES += backend/networkbuffers.cpp backend/pyrowavecalibrator.cpp backend/udpproberunner.cpp displaybackend.cpp
+HEADERS += backend/networkbuffers.h backend/pyrowavecalibrator.h backend/pyrowavebandwidth.h backend/udpprobe.h backend/udpproberunner.h displaybackend.h
 
 win32: LIBS += iphlpapi.lib advapi32.lib shell32.lib
 

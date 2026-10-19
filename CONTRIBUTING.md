@@ -170,6 +170,15 @@ make -C build/prefs-test
 ./build/prefs-test/streamingpreferences-test
 ```
 
+The UDP calibration receiver (reply parsing, the control-datagram vector shared
+with Pyroshine, loss/gap/FEC/queueing statistics) has a Qt test:
+
+```sh
+qmake6 app/tests/udpprobe_test.pro -o build/udpprobe-test/Makefile
+make -C build/udpprobe-test
+./build/udpprobe-test/udpprobe-test
+```
+
 The PyroWave renderer smoke test needs a Vulkan-capable display; see
 [renderer smoke test](docs/PYROWAVE.md#renderer-smoke-test). Run it with
 `SDL_VIDEODRIVER=wayland` and `SDL_VIDEODRIVER=x11` after window-system changes.

@@ -39,13 +39,13 @@ Related repositories:
 | `app/streaming/video/ffmpeg-renderers/pacer/vrr*`, `pacer/vrr/`, `app/streaming/vrrratepolicy.*` | VRR timing controller, pacing worker, diagnostics and stream-rate choices |
 | `app/streaming/input/gamepad.cpp`, `gamepadidentity.h`, `gamepadfeedback.h` | Controller arrival, button mapping, DualSense Edge identity, host feedback slot bounds |
 | `app/settings/streamingpreferences.*`, `bitratecalculator.h` | Preferences, streaming profiles, PyroWave availability and default bitrate |
-| `app/backend/networkbuffers.*`, `pyrowavecalibrator.*`, `pyrowavebandwidth.h`, `nvhttp.cpp` | Receive-buffer diagnostics/remediation, bandwidth calibration, HTTPS probe |
+| `app/backend/networkbuffers.*`, `pyrowavecalibrator.*`, `pyrowavebandwidth.h`, `udpprobe*.{h,cpp}`, `nvhttp.cpp` | Receive-buffer diagnostics/remediation, bandwidth calibration (Pyroshine UDP protocol, HTTPS probe fallback) |
 | `app/gui/SettingsView.qml` | Settings UI, including profiles, PyroWave and network tools |
 | `app/displaybackend.*` | Linux display backend policy: Qt platform preference, SDL driver matching, Settings diagnostic |
 | `app/cli/commandlineparser.cpp` | CLI options, including `--video-codec PyroWave` |
 | `moonlight-common-c/moonlight-common-c/` | Submodule fork: RTSP/SDP, RTP/FEC reassembly, PyroWave dialects, controller protocol |
 | `tests/` | Standalone CMake unit tests for fork code |
-| `app/tests/` | Renderer smoke test and streaming-preferences Qt test |
+| `app/tests/` | Renderer smoke test, streaming-preferences, brand translator and UDP calibration Qt tests |
 | `scripts/build-pyrowave-appimage.sh` | Pinned PyroWave AppImage build |
 | `scripts/build-appimage.sh`, `scripts/check-appimage-display-backends.sh`, `app/deploy/linux/*-probe.c` | AppImage packaging, host-library probes and packaging checks |
 | `scripts/build-linux-packages.sh`, `app/deploy/linux/nfpm.yaml`, `scripts/check-linux-icons.sh` | `.deb`/`.rpm`/Arch packages built from the AppImage payload; Linux icon checks |

@@ -3,6 +3,8 @@
 #include <QVariantList>
 #include <QThread>
 class ComputerManager;
+class NvHTTP;
+class NvAddress;
 class PyroWaveCalibrator : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool running READ running NOTIFY changed)
@@ -20,6 +22,8 @@ public:
 signals:
     void changed();
 private:
+    struct UdpSettings { bool pyroWave = false, encrypted = false; int fps = 60, bitrateKbps = 0, packetSize = 1392; };
+    int calibrateUdp(NvHTTP& http, const QString& info, const NvAddress& address, const UdpSettings& settings, QString* message);
     QThread* m_Worker = nullptr;
     bool m_Running = false;
     int m_Ceiling = 0;

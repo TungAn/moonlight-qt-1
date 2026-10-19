@@ -15,7 +15,7 @@ Moonlight's standard codecs and features and adds an explicitly selected
 
 - PyroWave decoding on the GPU in 4:2:0 and 4:4:4, SDR and HDR10.
 - H.264, HEVC, and AV1 with any Moonlight-compatible host.
-- PyroWave network calibration and receive-buffer diagnostics.
+- Network bandwidth calibration (UDP on Pyroshine hosts, any codec) and PyroWave receive-buffer diagnostics.
 - Named streaming profiles for switching between sets of stream settings.
 - [VRR presentation](docs/VRR.md): frames are shown on the host's frame timing,
   so a VRR display follows the game's frame rate with any host.
@@ -95,7 +95,7 @@ streamed Steam. To use PyroWave, select it explicitly as described below.
 4. Choose a bitrate. PyroWave's bitrate is a per-frame quality budget that scales
    with frame rate; the default is approximately 192 Mbps for 4K60 and 384 Mbps
    for 4K120 in 4:2:0 SDR. Use **Calibrate network bandwidth** to measure a safe
-   ceiling for a paired host.
+   bitrate for a paired host.
 
 From the command line, pass the same options to the AppImage or `Pyrolight.exe`:
 

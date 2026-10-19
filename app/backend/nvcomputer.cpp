@@ -58,6 +58,7 @@ NvComputer::NvComputer(QSettings& settings)
     this->appVersion = nullptr;
     this->maxLumaPixelsHEVC = 0;
     this->serverCodecModeSupport = 0;
+    this->udpProbeVersion = 0;
     this->pendingQuit = false;
     this->gpuModel = nullptr;
     this->isSupportedServerVersion = true;
@@ -154,6 +155,8 @@ NvComputer::NvComputer(NvHTTP& http, QString serverInfo)
         // Assume H.264 is always supported
         this->serverCodecModeSupport = SCM_H264;
     }
+
+    this->udpProbeVersion = NvHTTP::getXmlString(serverInfo, "PyroshineUdpProbeVersion").toInt();
 
     QString maxLumaPixelsHEVC = NvHTTP::getXmlString(serverInfo, "MaxLumaPixelsHEVC");
     if (!maxLumaPixelsHEVC.isEmpty()) {
@@ -560,6 +563,7 @@ bool NvComputer::update(const NvComputer& that)
     ASSIGN_IF_CHANGED(externalPort);
     ASSIGN_IF_CHANGED(pairState);
     ASSIGN_IF_CHANGED(serverCodecModeSupport);
+    ASSIGN_IF_CHANGED(udpProbeVersion);
     ASSIGN_IF_CHANGED(currentGameId);
     ASSIGN_IF_CHANGED(activeAddress);
     ASSIGN_IF_CHANGED(state);

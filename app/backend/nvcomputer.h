@@ -98,6 +98,9 @@ public:
     QVector<NvDisplayMode> displayModes;
     int maxLumaPixelsHEVC;
     int serverCodecModeSupport;
+    // Pyroshine UDP bandwidth calibration protocol (0: not offered). Only
+    // reported to paired clients over HTTPS.
+    int udpProbeVersion;
     QString gpuModel;
     bool isSupportedServerVersion;
 

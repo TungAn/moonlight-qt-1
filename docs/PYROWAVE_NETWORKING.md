@@ -46,9 +46,48 @@ and never block streaming.
 
 ## Bandwidth calibration
 
-In Settings, select an online paired PyroWave host and press **Calibrate network
-bandwidth** while no stream is running. The client runs one 32 MiB warm-up and
-three measured 32 MiB HTTPS downloads from the host's authenticated
+In Settings, select an online paired host and press **Calibrate network
+bandwidth** while no stream is running. The method depends on the host:
+
+| Host | Method |
+| --- | --- |
+| Pyroshine advertising `PyroshineUdpProbeVersion=1` | UDP calibration, any codec |
+| Older Pyroshine with PyroWave | HTTPS download probe (below) |
+| Sunshine, GameStream | Not available |
+
+### UDP calibration
+
+The host sends a ladder of eight 750 ms steps of frame-shaped UDP traffic
+through its real video sender, on its video port, to this client. The test uses
+the current profile: its frame rate, packet size (1392 bytes unless set) and
+codec (PyroWave frames are paced across their interval; H.264/HEVC/AV1 frames
+leave as bursts). The top rate is twice the configured bitrate (at least
+150 Mbps), capped at 95 % of any known physical Ethernet speed at either end.
+The receive socket requests the same buffer as the stream's video socket, so a
+buffer limited by `net.core.rmem_max` shows up here as it would while
+streaming, and the result says so.
+
+The client reports what it received every 100 ms; the host stops when the
+reports stop, and the ladder stops after a step that lost more than 10 %. The
+result lists, per step, the offered rate, its verdict (`clean`, `lossy`,
+`delayed`, `host_limited`), packet loss and 95th-percentile queueing delay,
+then the usable wire rate and a recommended video bitrate with its confidence.
+The recommendation removes packet headers and the host's FEC share and keeps
+20 % in reserve; **Use recommended bitrate** applies it. Nothing is changed
+automatically, and one short test does not guarantee bandwidth: repeat it when
+you usually stream.
+
+The protocol, its authentication and the recommendation rules are specified in
+Pyroshine's [bandwidth calibration](https://github.com/karsyboy/pyroshine/blob/main/docs/BANDWIDTH_CALIBRATION.md)
+guide. `app/backend/udpprobe.h` holds the parser, control datagrams and
+receive statistics (tested by `app/tests/udpprobe_test.pro`, including the
+control-datagram vector shared with the host); `udpproberunner.cpp` owns the
+socket (batched `recvmmsg` on Linux).
+
+### HTTPS download probe
+
+For older PyroWave hosts the client runs one 32 MiB warm-up and three measured
+32 MiB HTTPS downloads from the host's authenticated
 `/pyrowave-bandwidth-probe`, then recommends a bitrate ceiling:
 
 - the slowest measured throughput,
@@ -57,18 +96,16 @@ three measured 32 MiB HTTPS downloads from the host's authenticated
 
 A healthy 1 GbE path typically recommends about 750–800 Mbps. The route type
 (Ethernet, Wi-Fi or unknown) is reported; nominal Wi-Fi speeds and virtual
-adapters are not guessed. **Use recommended ceiling** applies the result; it
-never changes settings automatically. The 2,000,000 Kbps codec limit and the
-per-frame budget still apply.
+adapters are not guessed. The 2,000,000 Kbps codec limit and the per-frame
+budget still apply. This probe measures TCP throughput only. It does not
+establish loss-free UDP delivery or GPU decode capacity.
 
-Calibration measures TCP throughput only. It does not establish loss-free UDP
-delivery or GPU decode capacity.
-
-Implementation contract: the probe runs on a worker thread, pins the paired
-host certificate, presents the normal client certificate, buffers at most
-64 KiB, and rejects redirects, compression, oversized or truncated responses
-and timeouts (10 s per request). **Stop** interrupts an active probe. Host-side
-behavior is specified in Pyroshine's
+Implementation contract: both methods run on a worker thread, pin the paired
+host certificate and present the normal client certificate. The HTTPS probe
+buffers at most 64 KiB and rejects redirects, compression, oversized or
+truncated responses and timeouts (10 s per request). **Stop** interrupts an
+active probe (the UDP run sends an authenticated stop). Host-side behavior of
+the HTTPS probe is specified in Pyroshine's
 [PyroWave compatibility](https://github.com/karsyboy/pyroshine/blob/main/docs/PYROWAVE_COMPATIBILITY.md#authenticated-calibration) guide.
 
 ## Transport dialects
