@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake pkg-config libsdl2-dev libplacebo-dev
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libsdl2-dev libplacebo-dev qt6-base-dev libxcb1-dev libxau-dev xvfb
 
       - name: Build and run
         run: |
@@ -162,7 +162,7 @@ jobs:
             libssl-dev libsdl2-dev libsdl2-ttf-dev libopus-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
             libva-dev libvdpau-dev libdrm-dev libplacebo-dev libvulkan-dev \
-            libwayland-dev libx11-dev libegl-dev libgl-dev ${{ matrix.packages }}
+            libwayland-dev libx11-dev libxcb1-dev libxau-dev libegl-dev libgl-dev ${{ matrix.packages }}
 
       - name: Build PyroWave
         if: matrix.pyrowave

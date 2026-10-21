@@ -2,10 +2,13 @@
 
 #include <QTimer>
 #include <QEvent>
+#include <QHash>
 
 #include "SDL_compat.h"
 
 #include "settings/streamingpreferences.h"
+#include "streaming/input/controllerinputstate.h"
+#include "streaming/input/gamescopeinputfocus.h"
 
 class SdlGamepadKeyNavigation : public QObject
 {
@@ -27,7 +30,12 @@ public:
     Q_INVOKABLE int getConnectedGamepads();
 
 private:
-    void sendKey(QEvent::Type type, Qt::Key key, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+    friend class GamepadNavigationTest;
+    void sendKeyClick(Qt::Key key, Qt::KeyboardModifiers modifiers = Qt::NoModifier);
+
+    void refreshInputOwnership();
+    void updateInputOwnership();
+    void prepareGamepad(SDL_GameController* gamepad);
 
     void updateTimerState();
 
@@ -43,4 +51,9 @@ private:
     bool m_FirstPoll;
     bool m_HasFocus;
     Uint32 m_LastAxisNavigationEventTime;
+    bool m_ObserverInitialized;
+    uint64_t m_GamescopeSnapshot;
+    std::unique_ptr<GamescopeInputFocus> m_GamescopeFocus;
+    ControllerInputOwnership m_InputOwnership;
+    QHash<SDL_JoystickID, ControllerInputRearm> m_Rearm;
 };

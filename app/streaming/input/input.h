@@ -4,6 +4,8 @@
 #include "backend/computermanager.h"
 
 #include "SDL_compat.h"
+#include "controllerinputstate.h"
+#include "gamescopeinputfocus.h"
 
 struct GamepadState {
     SDL_GameController* controller;
@@ -16,7 +18,10 @@ struct GamepadState {
     int hapticEffectId;
 #endif
 
-    SDL_TimerID mouseEmulationTimer;
+    bool mouseEmulationActive;
+    ControllerInputRearm rearm;
+    uint8_t mouseButtonsDown;
+    bool touchpadNeedsRelease;
     uint32_t lastStartDownTime;
 
     bool clickpadButtonEmulationEnabled;
@@ -140,6 +145,12 @@ public:
 
     void notifyFocusGained();
 
+    bool handleInputOwnershipEvent(const SDL_Event& event);
+
+    bool handleGamepadMouseEvent(const SDL_Event& event);
+
+    void stopControllerInput();
+
     bool isCaptureActive();
 
     bool isSystemKeyCaptureActive();
@@ -156,6 +167,8 @@ public:
     QString getUnmappedGamepads();
 
 private:
+    friend class ControllerInputTest;
+
     enum KeyCombo {
         KeyComboQuit,
         KeyComboUngrabInput,
@@ -175,6 +188,17 @@ private:
     findStateForGamepad(SDL_JoystickID id);
 
     void sendGamepadState(GamepadState* state);
+
+    void updateControllerInputOwnership();
+    void refreshGamescopeInputOwnership();
+    void neutralizeControllerInput(GamepadState* state);
+    void prepareControllerInput(GamepadState* state);
+    void prepareControllerTouchpad(GamepadState* state);
+    void updateGamepadMouseTimer();
+    void sendGamepadMouseMotion(GamepadState* state);
+    void sendGamepadMouseButton(GamepadState* state, const SDL_ControllerButtonEvent* event);
+    bool acceptsControllerInput(Uint32 timestamp, const char* kind);
+    void logControllerInputSend(const char* kind, short index);
 
     void sendGamepadBatteryState(GamepadState* state, SDL_JoystickPowerLevel level);
 
@@ -204,6 +228,13 @@ private:
     Uint32 dragTimerCallback(Uint32 interval, void* param);
 
     SDL_Window* m_Window;
+    ControllerInputOwnership m_ControllerInput;
+    Uint32 m_GamepadMouseEventType;
+    Uint32 m_GamescopeEventType;
+    std::unique_ptr<GamescopeInputFocus> m_GamescopeFocus;
+    uint64_t m_GamescopeSnapshot;
+    SDL_TimerID m_GamepadMouseTimer;
+    bool m_InputDiagnostics;
     bool m_MultiController;
     bool m_GamepadMouse;
     bool m_SwapMouseButtons;
@@ -224,6 +255,7 @@ private:
     QString m_OldIgnoreDevices;
     QString m_OldIgnoreDevicesExcept;
     QString m_OldSteamHidapi;
+    QString m_OldBackgroundEvents;
     QStringList m_IgnoreDeviceGuids;
     StreamingPreferences::CaptureSysKeysMode m_CaptureSystemKeysMode;
     int m_MouseCursorCapturedVisibilityState;

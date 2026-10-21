@@ -132,7 +132,9 @@ test) against Ubuntu 24.04 packages, and checks that every copy of the PyroWave
 pin agrees. Run the relevant suites locally before pushing; CI does not run the
 renderer smoke test, the HTTPS harness or a Windows build.
 
-Client unit tests (SDL2 and libplacebo through pkg-config):
+Client unit tests use SDL2 and libplacebo through pkg-config. Qt6 Core/Gui enables
+production input fixtures; Linux compositor/UI tests also use xcb, xau, Python3
+and Xvfb. CI installs these dependencies:
 
 ```sh
 cmake -S tests -B build/tests
@@ -140,7 +142,8 @@ cmake --build build/tests
 ctest --test-dir build/tests --output-on-failure
 ```
 
-They cover native controller identities, protocol capabilities and normalized paddle press/release, PyroWave color
+They cover [controller ownership and Qt navigation](docs/CONTROLLER_INPUT_OWNERSHIP.md#validation),
+native controller identities, protocol capabilities and normalized paddle press/release, PyroWave color
 mapping, frame validation, record parsing and recovery, bandwidth math,
 Linux display backend selection, golden bitstreams from both the client and
 host forks, and VRR presentation (`vrr-timing` simulates the timing controller

@@ -32,7 +32,7 @@ SdlInputHandler::findStateForGamepad(SDL_JoystickID id)
     int i;
 
     for (i = 0; i < MAX_GAMEPADS; i++) {
-        if (m_GamepadState[i].jsId == id) {
+        if (m_GamepadState[i].controller != nullptr && m_GamepadState[i].jsId == id) {
             SDL_assert(!m_MultiController || m_GamepadState[i].index == i);
             return &m_GamepadState[i];
         }
@@ -45,7 +45,16 @@ SdlInputHandler::findStateForGamepad(SDL_JoystickID id)
 
 void SdlInputHandler::sendGamepadState(GamepadState* state)
 {
+    refreshGamescopeInputOwnership();
     SDL_assert(m_GamepadMask == 0x1 || m_MultiController);
+
+    if (!m_ControllerInput.active) {
+        // Arrival/bookkeeping is still allowed while suspended.
+        LiSendMultiControllerEvent(state->index, m_GamepadMask, 0, 0, 0, 0, 0, 0, 0);
+        return;
+    }
+
+    logControllerInputSend("state", state->index);
 
     // Handle Select+PS as the clickpad button on PS4/5 controllers without a clickpad mapping
     int buttons = state->buttons;
@@ -147,8 +156,17 @@ void SdlInputHandler::sendGamepadBatteryState(GamepadState* state, SDL_JoystickP
 
 Uint32 SdlInputHandler::mouseEmulationTimerCallback(Uint32 interval, void *param)
 {
-    auto gamepad = reinterpret_cast<GamepadState*>(param);
+    // No handler/controller pointers on the timer thread. A late callback is
+    // harmless: each handler owns a distinct SDL event type.
+    SDL_Event event = {};
+    event.type = Uint32(uintptr_t(param));
+    event.common.timestamp = SDL_GetTicks();
+    SDL_PushEvent(&event);
+    return interval;
+}
 
+void SdlInputHandler::sendGamepadMouseMotion(GamepadState* gamepad)
+{
     int rawX;
     int rawY;
 
@@ -174,10 +192,76 @@ Uint32 SdlInputHandler::mouseEmulationTimerCallback(Uint32 interval, void *param
     deltaY = qAbs(deltaY) > MOUSE_EMULATION_DEADZONE ? deltaY - MOUSE_EMULATION_DEADZONE : 0;
 
     if (deltaX != 0 || deltaY != 0) {
+        logControllerInputSend("mouse movement", gamepad->index);
         LiSendMouseMoveEvent((short)deltaX, (short)deltaY);
     }
+}
 
-    return interval;
+void SdlInputHandler::sendGamepadMouseButton(GamepadState* state, const SDL_ControllerButtonEvent* event)
+{
+    const bool pressed = event->state == SDL_PRESSED;
+    int mouseButton = 0;
+    switch (event->button) {
+    case SDL_CONTROLLER_BUTTON_A: mouseButton = BUTTON_LEFT; break;
+    case SDL_CONTROLLER_BUTTON_B: mouseButton = BUTTON_RIGHT; break;
+    case SDL_CONTROLLER_BUTTON_X: mouseButton = BUTTON_MIDDLE; break;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: mouseButton = BUTTON_X1; break;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: mouseButton = BUTTON_X2; break;
+    default: break;
+    }
+    if (mouseButton) {
+        const unsigned bit = 1u << (mouseButton - 1);
+        if (pressed) {
+            state->mouseButtonsDown |= bit;
+        }
+        else {
+            state->mouseButtonsDown &= ~bit;
+        }
+        logControllerInputSend("mouse button", state->index);
+        LiSendMouseButtonEvent(pressed ? BUTTON_ACTION_PRESS : BUTTON_ACTION_RELEASE, mouseButton);
+    }
+    else if (pressed && event->button >= SDL_CONTROLLER_BUTTON_DPAD_UP &&
+             event->button <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+        logControllerInputSend("mouse scroll", state->index);
+        switch (event->button) {
+        case SDL_CONTROLLER_BUTTON_DPAD_UP: LiSendScrollEvent(1); break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN: LiSendScrollEvent(-1); break;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: LiSendHScrollEvent(1); break;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT: LiSendHScrollEvent(-1); break;
+        }
+    }
+}
+
+void SdlInputHandler::updateGamepadMouseTimer()
+{
+    bool needed = false;
+    for (const auto& state : m_GamepadState) {
+        needed |= state.controller && state.mouseEmulationActive && m_ControllerInput.active;
+    }
+    if (!needed && m_GamepadMouseTimer) {
+        SDL_RemoveTimer(m_GamepadMouseTimer);
+        m_GamepadMouseTimer = 0;
+    }
+    else if (needed && !m_GamepadMouseTimer && m_GamepadMouseEventType != Uint32(-1)) {
+        m_GamepadMouseTimer = SDL_AddTimer(MOUSE_EMULATION_POLLING_INTERVAL,
+                                         mouseEmulationTimerCallback,
+                                         reinterpret_cast<void*>(uintptr_t(m_GamepadMouseEventType)));
+    }
+}
+
+bool SdlInputHandler::handleGamepadMouseEvent(const SDL_Event& event)
+{
+    if (event.type != m_GamepadMouseEventType) {
+        return false;
+    }
+    if (acceptsControllerInput(event.common.timestamp, "mouse tick")) {
+        for (auto& state : m_GamepadState) {
+            if (state.controller && state.mouseEmulationActive) {
+                sendGamepadMouseMotion(&state);
+            }
+        }
+    }
+    return true;
 }
 
 static void updateAnalogStickAxis(short& value, short newValue, bool& dirty)
@@ -202,6 +286,10 @@ static void updateTriggerAxis(unsigned char& value, unsigned char newValue, bool
 
 void SdlInputHandler::handleControllerAxisEvent(SDL_ControllerAxisEvent* event)
 {
+    if (!acceptsControllerInput(event->timestamp, "axis")) {
+        return;
+    }
+
     SDL_JoystickID gameControllerId = event->which;
     GamepadState* state = findStateForGamepad(gameControllerId);
     if (state == NULL) {
@@ -212,40 +300,45 @@ void SdlInputHandler::handleControllerAxisEvent(SDL_ControllerAxisEvent* event)
     SDL_Event nextEvent;
     bool dirty = false;
     for (;;) {
-        switch (event->axis)
-        {
-            case SDL_CONTROLLER_AXIS_LEFTX:
-                updateAnalogStickAxis(state->lsX, event->value, dirty);
-                break;
-            case SDL_CONTROLLER_AXIS_LEFTY:
-                // Signed values have one more negative value than
-                // positive value, so inverting the sign on -32768
-                // could actually cause the value to overflow and
-                // wrap around to be negative again. Avoid that by
-                // capping the value at 32767.
-                updateAnalogStickAxis(state->lsY, -qMax(event->value, (short)-32767), dirty);
-                break;
-            case SDL_CONTROLLER_AXIS_RIGHTX:
-                updateAnalogStickAxis(state->rsX, event->value, dirty);
-                break;
-            case SDL_CONTROLLER_AXIS_RIGHTY:
-                updateAnalogStickAxis(state->rsY, -qMax(event->value, (short)-32767), dirty);
-                break;
-            case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
-                updateTriggerAxis(state->lt, (unsigned char)(event->value * 255UL / 32767), dirty);
-                break;
-            case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
-                updateTriggerAxis(state->rt, (unsigned char)(event->value * 255UL / 32767), dirty);
-                break;
-            default:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Unhandled controller axis: %d",
-                            event->axis);
-                return;
+        if (state->rearm.axis(event->axis, event->value,
+                               event->axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT)) {
+            switch (event->axis)
+            {
+                case SDL_CONTROLLER_AXIS_LEFTX:
+                    updateAnalogStickAxis(state->lsX, event->value, dirty);
+                    break;
+                case SDL_CONTROLLER_AXIS_LEFTY:
+                    // Signed values have one more negative value than
+                    // positive value, so inverting the sign on -32768
+                    // could actually cause the value to overflow and
+                    // wrap around to be negative again. Avoid that by
+                    // capping the value at 32767.
+                    updateAnalogStickAxis(state->lsY, -qMax(event->value, (short)-32767), dirty);
+                    break;
+                case SDL_CONTROLLER_AXIS_RIGHTX:
+                    updateAnalogStickAxis(state->rsX, event->value, dirty);
+                    break;
+                case SDL_CONTROLLER_AXIS_RIGHTY:
+                    updateAnalogStickAxis(state->rsY, -qMax(event->value, (short)-32767), dirty);
+                    break;
+                case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
+                    updateTriggerAxis(state->lt, (unsigned char)(event->value * 255UL / 32767), dirty);
+                    break;
+                case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
+                    updateTriggerAxis(state->rt, (unsigned char)(event->value * 255UL / 32767), dirty);
+                    break;
+                default:
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "Unhandled controller axis: %d",
+                                event->axis);
+                    return;
+            }
         }
 
-        // Check for another event to batch with
-        if (SDL_PeepEvents(&nextEvent, 1, SDL_PEEKEVENT, SDL_CONTROLLERAXISMOTION, SDL_CONTROLLERAXISMOTION) <= 0) {
+        // Check the queue head, preserving ownership and button event ordering.
+        if (SDL_PeepEvents(&nextEvent, 1, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) <= 0 ||
+                nextEvent.type != SDL_CONTROLLERAXISMOTION ||
+                !m_ControllerInput.accepts(nextEvent.caxis.timestamp)) {
             break;
         }
 
@@ -260,13 +353,17 @@ void SdlInputHandler::handleControllerAxisEvent(SDL_ControllerAxisEvent* event)
     }
 
     // Only send the gamepad state to the host if it's not in mouse emulation mode
-    if (state->mouseEmulationTimer == 0 && dirty) {
+    if (!state->mouseEmulationActive && dirty) {
         sendGamepadState(state);
     }
 }
 
 void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* event)
 {
+    if (!acceptsControllerInput(event->timestamp, "button")) {
+        return;
+    }
+
     if (event->button >= SDL_arraysize(GamepadIdentity::ButtonMap)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "No mapping for gamepad button: %u",
@@ -276,6 +373,10 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
 
     GamepadState* state = findStateForGamepad(event->which);
     if (state == NULL) {
+        return;
+    }
+
+    if (!state->rearm.button(event->button, event->state == SDL_PRESSED)) {
         return;
     }
 
@@ -302,44 +403,16 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
         if (event->button == SDL_CONTROLLER_BUTTON_START) {
             state->lastStartDownTime = SDL_GetTicks();
         }
-        else if (state->mouseEmulationTimer != 0) {
-            if (event->button == SDL_CONTROLLER_BUTTON_A) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_LEFT);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_B) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_RIGHT);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_X) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_MIDDLE);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_X1);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, BUTTON_X2);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-                LiSendScrollEvent(1);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-                LiSendScrollEvent(-1);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
-                LiSendHScrollEvent(1);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
-                LiSendHScrollEvent(-1);
-            }
-        }
     }
     else {
         state->buttons &= ~GamepadIdentity::ButtonMap[event->button];
 
         if (event->button == SDL_CONTROLLER_BUTTON_START) {
-            if (SDL_GetTicks() - state->lastStartDownTime > MOUSE_EMULATION_LONG_PRESS_TIME) {
-                if (state->mouseEmulationTimer != 0) {
-                    SDL_RemoveTimer(state->mouseEmulationTimer);
-                    state->mouseEmulationTimer = 0;
+            if (state->lastStartDownTime &&
+                    SDL_GetTicks() - state->lastStartDownTime > MOUSE_EMULATION_LONG_PRESS_TIME) {
+                if (state->mouseEmulationActive) {
+                    state->mouseEmulationActive = false;
+                    updateGamepadMouseTimer();
 
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                                 "Mouse emulation deactivated");
@@ -349,7 +422,8 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
                     // Send the start button up event to the host, since we won't do it below
                     sendGamepadState(state);
 
-                    state->mouseEmulationTimer = SDL_AddTimer(MOUSE_EMULATION_POLLING_INTERVAL, SdlInputHandler::mouseEmulationTimerCallback, state);
+                    state->mouseEmulationActive = true;
+                    updateGamepadMouseTimer();
 
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                                 "Mouse emulation active");
@@ -357,23 +431,10 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
                 }
             }
         }
-        else if (state->mouseEmulationTimer != 0) {
-            if (event->button == SDL_CONTROLLER_BUTTON_A) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_LEFT);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_B) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_RIGHT);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_X) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_MIDDLE);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_X1);
-            }
-            else if (event->button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) {
-                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, BUTTON_X2);
-            }
-        }
+    }
+
+    if (state->mouseEmulationActive && event->button != SDL_CONTROLLER_BUTTON_START) {
+        sendGamepadMouseButton(state, event);
     }
 
     // Handle Start+Select+L1+R1 as a gamepad quit combo
@@ -409,7 +470,7 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
     }
 
     // Only send the gamepad state to the host if it's not in mouse emulation mode
-    if (state->mouseEmulationTimer == 0) {
+    if (!state->mouseEmulationActive) {
         sendGamepadState(state);
     }
 }
@@ -418,6 +479,10 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
 
 void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* event)
 {
+    if (!acceptsControllerInput(event->timestamp, "sensor")) {
+        return;
+    }
+
     GamepadState* state = findStateForGamepad(event->which);
     if (state == NULL) {
         return;
@@ -431,6 +496,7 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
             memcpy(state->lastAccelEventData, event->data, sizeof(event->data));
             state->lastAccelEventTime = event->timestamp;
 
+            logControllerInputSend("motion", state->index);
             LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_ACCEL, event->data[0], event->data[1], event->data[2]);
         }
         break;
@@ -442,6 +508,7 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
             state->lastGyroEventTime = event->timestamp;
 
             // Convert rad/s to deg/s
+            logControllerInputSend("motion", state->index);
             LiSendControllerMotionEvent((uint8_t)state->index, LI_MOTION_TYPE_GYRO,
                                         event->data[0] * 57.2957795f,
                                         event->data[1] * 57.2957795f,
@@ -453,8 +520,17 @@ void SdlInputHandler::handleControllerSensorEvent(SDL_ControllerSensorEvent* eve
 
 void SdlInputHandler::handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent* event)
 {
+    if (!acceptsControllerInput(event->timestamp, "touchpad")) {
+        return;
+    }
+
     GamepadState* state = findStateForGamepad(event->which);
     if (state == NULL) {
+        return;
+    }
+
+    if (state->touchpadNeedsRelease) {
+        prepareControllerTouchpad(state);
         return;
     }
 
@@ -473,6 +549,7 @@ void SdlInputHandler::handleControllerTouchpadEvent(SDL_ControllerTouchpadEvent*
         return;
     }
 
+    logControllerInputSend("touchpad", state->index);
     LiSendControllerTouchEvent2((uint8_t)state->index, eventType,
                                 (uint8_t)event->touchpad, event->finger,
                                 event->x, event->y, event->pressure);
@@ -579,6 +656,7 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
 
         state->controller = controller;
         state->jsId = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(state->controller));
+        prepareControllerInput(state);
 
         hapticCaps = 0;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -784,9 +862,11 @@ void SdlInputHandler::handleControllerDeviceEvent(SDL_ControllerDeviceEvent* eve
     else if (event->type == SDL_CONTROLLERDEVICEREMOVED) {
         state = findStateForGamepad(event->which);
         if (state != NULL) {
-            if (state->mouseEmulationTimer != 0) {
+            neutralizeControllerInput(state);
+            if (state->mouseEmulationActive) {
                 Session::get()->notifyMouseEmulationMode(false);
-                SDL_RemoveTimer(state->mouseEmulationTimer);
+                state->mouseEmulationActive = false;
+                updateGamepadMouseTimer();
             }
 
             SDL_GameControllerClose(state->controller);
@@ -1075,4 +1155,210 @@ int SdlInputHandler::getAttachedGamepadMask()
     }
 
     return mask;
+}
+
+bool SdlInputHandler::acceptsControllerInput(Uint32 timestamp, const char* kind)
+{
+    refreshGamescopeInputOwnership();
+    const bool accepted = m_ControllerInput.accepts(timestamp);
+    if (m_InputDiagnostics) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_INPUT, "Controller receipt: %s timestamp=%u forward=%d active=%d",
+                    kind, timestamp, accepted, m_ControllerInput.active);
+    }
+    return accepted;
+}
+
+void SdlInputHandler::prepareControllerTouchpad(GamepadState* state)
+{
+    state->touchpadNeedsRelease = false;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    for (int pad = 0; pad < SDL_GameControllerGetNumTouchpads(state->controller); ++pad) {
+        for (int finger = 0; finger < SDL_GameControllerGetNumTouchpadFingers(state->controller, pad); ++finger) {
+            Uint8 down = 0;
+            SDL_GameControllerGetTouchpadFinger(state->controller, pad, finger, &down, nullptr, nullptr, nullptr);
+            state->touchpadNeedsRelease |= down != 0;
+        }
+    }
+#endif
+}
+
+void SdlInputHandler::prepareControllerInput(GamepadState* state)
+{
+    state->rearm = {};
+    for (unsigned button = 0; button < SDL_CONTROLLER_BUTTON_MAX && button < 32; ++button) {
+        if (SDL_GameControllerGetButton(state->controller, SDL_GameControllerButton(button))) {
+            state->rearm.buttons |= uint32_t(1) << button;
+        }
+    }
+    for (unsigned axis = 0; axis < SDL_CONTROLLER_AXIS_MAX; ++axis) {
+        const int value = SDL_GameControllerGetAxis(state->controller, SDL_GameControllerAxis(axis));
+        if (axis >= SDL_CONTROLLER_AXIS_TRIGGERLEFT ? value > 1024 : abs(value) > 8000) {
+            state->rearm.axes |= uint8_t(1) << axis;
+        }
+    }
+    prepareControllerTouchpad(state);
+}
+
+void SdlInputHandler::neutralizeControllerInput(GamepadState* state)
+{
+    logControllerInputSend("neutralize", state->index);
+    // Keep slot identity and the attached mask. A focus change is not removal.
+    state->buttons = state->lsX = state->lsY = state->rsX = state->rsY = 0;
+    state->lt = state->rt = 0;
+    state->lastStartDownTime = 0;
+    state->emulatedClickpadButtonDown = false;
+    LiSendMultiControllerEvent(state->index, m_GamepadMask, 0, 0, 0, 0, 0, 0, 0);
+    for (unsigned button = BUTTON_LEFT; button <= BUTTON_X2; ++button) {
+        if (state->mouseButtonsDown & (1u << (button - 1))) {
+            logControllerInputSend("mouse button/scroll", state->index);
+            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, button);
+        }
+    }
+    state->mouseButtonsDown = 0;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    for (int pad = 0; pad < SDL_GameControllerGetNumTouchpads(state->controller) && pad < 2; ++pad) {
+        LiSendControllerTouchEvent2(state->index, LI_TOUCH_EVENT_CANCEL_ALL, pad, 0, 0, 0, 0);
+    }
+    if (state->gyroReportPeriodMs) {
+        LiSendControllerMotionEvent(state->index, LI_MOTION_TYPE_GYRO, 0, 0, 0);
+    }
+    if (state->accelReportPeriodMs) {
+        LiSendControllerMotionEvent(state->index, LI_MOTION_TYPE_ACCEL, 0, 0, 0);
+    }
+    SDL_zero(state->lastGyroEventData);
+    SDL_zero(state->lastAccelEventData);
+    state->lastGyroEventTime = state->lastAccelEventTime = 0;
+#endif
+}
+
+void SdlInputHandler::updateControllerInputOwnership()
+{
+    if (!m_ControllerInput.update(SDL_GetTicks())) {
+        return;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
+                "Controller ownership: %s focus=%d visible=%d minimized=%d background=%d Gaming Mode=%d mask=%04x",
+                m_ControllerInput.active ? "active" : "suspended",
+                m_ControllerInput.focused, m_ControllerInput.visible, m_ControllerInput.minimized,
+                m_ControllerInput.backgroundAllowed, m_ControllerInput.gamingMode, m_GamepadMask);
+    if (!m_ControllerInput.active && !m_ControllerInput.compositorAllowed) {
+        // Steam Input layouts may emit ordinary keyboard/mouse events too.
+        raiseAllKeys();
+        for (unsigned button = BUTTON_LEFT; button <= BUTTON_X2; ++button) {
+            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, button);
+        }
+    }
+    // Only user input is discarded; preserve device arrival/removal and feedback.
+    SDL_FlushEvent(SDL_CONTROLLERAXISMOTION);
+    SDL_FlushEvents(SDL_CONTROLLERBUTTONDOWN, SDL_CONTROLLERBUTTONUP);
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_FlushEvents(SDL_CONTROLLERTOUCHPADDOWN, SDL_CONTROLLERSENSORUPDATE);
+#endif
+    SDL_FlushEvent(m_GamepadMouseEventType);
+    for (auto& state : m_GamepadState) {
+        if (!state.controller) {
+            continue;
+        }
+        if (m_ControllerInput.active) {
+            prepareControllerInput(&state);
+        }
+        else {
+            neutralizeControllerInput(&state);
+        }
+    }
+    updateGamepadMouseTimer();
+}
+
+bool SdlInputHandler::handleInputOwnershipEvent(const SDL_Event& event)
+{
+    refreshGamescopeInputOwnership();
+    if (event.type == m_GamescopeEventType) {
+        return true;
+    }
+    if (m_GamescopeSnapshot & (GamescopeInputFocus::Known | GamescopeInputFocus::Pending)) {
+        switch (event.type) {
+        case SDL_KEYDOWN:
+        case SDL_KEYUP:
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_MOUSEBUTTONUP:
+        case SDL_MOUSEMOTION:
+        case SDL_MOUSEWHEEL:
+            if (!m_ControllerInput.compositorAllowed || !m_ControllerInput.accepts(event.common.timestamp)) {
+                return true;
+            }
+            break;
+        }
+    }
+    if (event.type != SDL_WINDOWEVENT || !m_Window ||
+            event.window.windowID != SDL_GetWindowID(m_Window)) {
+        return false;
+    }
+    if (m_InputDiagnostics) {
+        const Uint32 flags = SDL_GetWindowFlags(m_Window);
+        SDL_LogInfo(SDL_LOG_CATEGORY_INPUT,
+                    "Input window event=%u keyboard=%d mouse=%d shown=%d minimized=%d compositor=%s",
+                    event.window.event, SDL_GetKeyboardFocus() == m_Window, SDL_GetMouseFocus() == m_Window,
+                    !!(flags & SDL_WINDOW_SHOWN), !!(flags & SDL_WINDOW_MINIMIZED),
+                    !m_GamescopeFocus ? "unavailable" :
+                    (m_GamescopeSnapshot & GamescopeInputFocus::Known) ?
+                    (GamescopeInputFocus::permits(m_GamescopeSnapshot) ? "owned" : "blocked") : "unknown");
+    }
+    switch (event.window.event) {
+    case SDL_WINDOWEVENT_FOCUS_LOST:
+        m_ControllerInput.focused = false;
+        break;
+    case SDL_WINDOWEVENT_FOCUS_GAINED:
+        m_ControllerInput.focused = true;
+        break;
+    case SDL_WINDOWEVENT_HIDDEN:
+        m_ControllerInput.visible = false;
+        break;
+    case SDL_WINDOWEVENT_SHOWN:
+        m_ControllerInput.visible = true;
+        break;
+    case SDL_WINDOWEVENT_MINIMIZED:
+        m_ControllerInput.minimized = true;
+        break;
+    case SDL_WINDOWEVENT_RESTORED:
+    case SDL_WINDOWEVENT_MAXIMIZED:
+        m_ControllerInput.minimized = false;
+        break;
+    default:
+        return false;
+    }
+    updateControllerInputOwnership();
+    return false;
+}
+
+void SdlInputHandler::stopControllerInput()
+{
+    m_ControllerInput.running = false;
+    updateControllerInputOwnership();
+}
+
+void SdlInputHandler::logControllerInputSend(const char* kind, short index)
+{
+    if (m_InputDiagnostics) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_INPUT, "Controller transmit: %s slot=%d mask=%04x", kind, index, m_GamepadMask);
+    }
+}
+
+void SdlInputHandler::refreshGamescopeInputOwnership()
+{
+    if (!m_GamescopeFocus) return;
+    const uint64_t snapshot = m_GamescopeFocus->snapshot();
+    if (snapshot == m_GamescopeSnapshot) return;
+    if ((snapshot >> GamescopeInputFocus::GenerationShift) !=
+            (m_GamescopeSnapshot >> GamescopeInputFocus::GenerationShift)) {
+        // A loss must neutralize and rearm even if the overlay already closed
+        // before this thread consumed its notification.
+        m_ControllerInput.compositorAllowed = false;
+        updateControllerInputOwnership();
+    }
+    m_GamescopeSnapshot = snapshot;
+    m_ControllerInput.compositorAllowed = GamescopeInputFocus::permits(snapshot);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Gamescope controller ownership: %s (known=%d pending=%d)",
+                m_ControllerInput.compositorAllowed ? "eligible" : "suspended",
+                !!(snapshot & GamescopeInputFocus::Known), !!(snapshot & GamescopeInputFocus::Pending));
+    updateControllerInputOwnership();
 }

@@ -37,10 +37,11 @@ Related repositories:
 | `app/streaming/video/pyrowave*.{h,cpp}` | PyroWave decoder, native frame and color rules, record-framed adapter |
 | `app/streaming/video/ffmpeg-renderers/plvk.*` | libplacebo Vulkan renderer shared with the PyroWave decoder; Linux VRR presenter |
 | `app/streaming/video/ffmpeg-renderers/pacer/vrr*`, `pacer/vrr/`, `app/streaming/vrrratepolicy.*` | VRR timing controller, pacing worker, diagnostics and stream-rate choices |
-| `app/streaming/input/gamepad.cpp`, `gamepadidentity.h`, `gamepadfeedback.h` | Controller arrival, button mapping, DualSense Edge identity, host feedback slot bounds |
+| `app/streaming/input/gamepad.cpp`, `controllerinputstate.h`, `gamescopeinputfocus.*`, `gamepadidentity.h`, `gamepadfeedback.h` | Controller ownership/rearming, Gamescope global input owner, arrival, button mapping, DualSense Edge identity, host feedback slot bounds |
 | `app/settings/streamingpreferences.*`, `bitratecalculator.h` | Preferences, streaming profiles, PyroWave availability and default bitrate |
 | `app/backend/networkbuffers.*`, `pyrowavecalibrator.*`, `pyrowavebandwidth.h`, `udpprobe*.{h,cpp}`, `nvhttp.cpp` | Receive-buffer diagnostics/remediation, bandwidth calibration (Pyroshine UDP protocol, HTTPS probe fallback) |
 | `app/gui/SettingsView.qml` | Settings UI, including profiles, PyroWave and network tools |
+| `app/gui/sdlgamepadkeynavigation.*` | Qt menu controller navigation, shared Gamescope ownership and held-control rearming |
 | `app/displaybackend.*` | Linux display backend policy: Qt platform preference, SDL driver matching, Settings diagnostic |
 | `app/cli/commandlineparser.cpp` | CLI options, including `--video-codec PyroWave` |
 | `moonlight-common-c/moonlight-common-c/` | Submodule fork: RTSP/SDP, RTP/FEC reassembly, PyroWave dialects, controller protocol |
@@ -68,6 +69,7 @@ Everything else under `app/` is upstream Moonlight code.
 | Common-c protocol extension | `moonlight-common-c/moonlight-common-c/docs/pyrowave.md` |
 | Audio quality request (`x-moonshine-audio.quality`) | `moonlight-common-c/moonlight-common-c/docs/audio-quality.md` |
 | Host-side protocol and probe | Pyroshine `docs/PYROWAVE.md`, `docs/PYROWAVE_COMPATIBILITY.md`, `docs/DUALSENSE_EDGE.md` |
+| Controller input ownership and Steam menus | `docs/CONTROLLER_INPUT_OWNERSHIP.md` |
 | General Moonlight behavior | Upstream code and the [Moonlight wiki](https://github.com/moonlight-stream/moonlight-docs/wiki) |
 
 ## Fork functionality that must not regress

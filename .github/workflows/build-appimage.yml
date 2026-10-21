@@ -60,7 +60,7 @@ jobs:
             libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev \
             libibus-1.0-dev libpulse-dev libudev-dev libx11-dev libxcursor-dev \
             libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev \
-            libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev \
+            libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev libxau-dev \
             libx11-xcb-dev libxfixes-dev libxtst-dev wayland-protocols libopus-dev \
             libvdpau-dev libgl-dev libpipewire-0.3-dev liburing-dev vulkan-sdk cmake \
             libwayland-dev libdecor-0-dev qt6-wayland

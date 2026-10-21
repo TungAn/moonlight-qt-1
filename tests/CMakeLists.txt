@@ -96,3 +96,64 @@ target_include_directories(vrr-worker PRIVATE ../app)
 target_link_libraries(vrr-worker PRIVATE Threads::Threads)
 target_compile_options(vrr-worker PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG -Wall -Wextra>)
 add_test(NAME vrr-worker COMMAND vrr-worker)
+
+add_executable(controller-input controller_input.cpp)
+target_compile_features(controller-input PRIVATE cxx_std_11)
+target_include_directories(controller-input PRIVATE ../app)
+target_compile_options(controller-input PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+add_test(NAME controller-input COMMAND controller-input)
+
+# Exercise the production SDL handlers and intercept the actual outbound calls.
+# No live host, controller hardware, Qt event loop or display server is needed.
+find_package(Qt6 COMPONENTS Core Gui QUIET)
+if(UNIX AND Qt6_FOUND AND SDL2_VERSION VERSION_GREATER_EQUAL "2.0.14")
+    add_executable(controller-input-sdl controller_input_sdl.cpp
+        ../app/streaming/input/input.cpp ../app/streaming/input/gamepad.cpp
+        ../app/streaming/input/gamescopeinputfocus.cpp)
+    target_compile_features(controller-input-sdl PRIVATE cxx_std_17)
+    target_include_directories(controller-input-sdl PRIVATE input-stubs ../app
+        ../moonlight-common-c/moonlight-common-c/src)
+    target_link_libraries(controller-input-sdl PRIVATE Qt6::Core Qt6::Gui PkgConfig::SDL2)
+    target_compile_options(controller-input-sdl PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+    add_test(NAME controller-input-sdl COMMAND controller-input-sdl)
+    set_tests_properties(controller-input-sdl PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    pkg_check_modules(GAMESCOPE_XCB IMPORTED_TARGET xcb xau)
+    if(GAMESCOPE_XCB_FOUND AND TARGET controller-input-sdl)
+        target_compile_definitions(controller-input-sdl PRIVATE HAS_GAMESCOPE_INPUT)
+        target_link_libraries(controller-input-sdl PRIVATE PkgConfig::GAMESCOPE_XCB Threads::Threads)
+        add_executable(gamescope-input-focus gamescope_input_focus.cpp controller_input_sdl.cpp
+            ../app/streaming/input/input.cpp ../app/streaming/input/gamepad.cpp
+            ../app/streaming/input/gamescopeinputfocus.cpp)
+        target_compile_features(gamescope-input-focus PRIVATE cxx_std_17)
+        target_include_directories(gamescope-input-focus PRIVATE input-stubs ../app
+            ../moonlight-common-c/moonlight-common-c/src)
+        target_compile_definitions(gamescope-input-focus PRIVATE HAS_GAMESCOPE_INPUT CONTROLLER_INPUT_FIXTURE_ONLY)
+        target_link_libraries(gamescope-input-focus PRIVATE Qt6::Core Qt6::Gui PkgConfig::GAMESCOPE_XCB PkgConfig::SDL2 Threads::Threads)
+        target_compile_options(gamescope-input-focus PRIVATE -UNDEBUG)
+        add_executable(gamepad-ui-navigation gamepad_ui_navigation.cpp
+            ../app/gui/sdlgamepadkeynavigation.cpp
+            ../app/streaming/input/gamescopeinputfocus.cpp)
+        set_target_properties(gamepad-ui-navigation PROPERTIES AUTOMOC ON)
+        target_compile_features(gamepad-ui-navigation PRIVATE cxx_std_17)
+        target_include_directories(gamepad-ui-navigation PRIVATE input-stubs ../app)
+        target_compile_definitions(gamepad-ui-navigation PRIVATE HAS_GAMESCOPE_INPUT)
+        target_link_libraries(gamepad-ui-navigation PRIVATE Qt6::Core Qt6::Gui
+            PkgConfig::GAMESCOPE_XCB PkgConfig::SDL2 Threads::Threads)
+        target_compile_options(gamepad-ui-navigation PRIVATE -UNDEBUG)
+        find_package(Python3 COMPONENTS Interpreter QUIET)
+        find_program(XVFB_EXECUTABLE Xvfb)
+        if(Python3_FOUND AND XVFB_EXECUTABLE)
+            add_test(NAME gamescope-input-focus COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/gamescope_input_focus.py ${XVFB_EXECUTABLE}
+                $<TARGET_FILE:gamescope-input-focus>)
+            set_tests_properties(gamescope-input-focus PROPERTIES TIMEOUT 40)
+            add_test(NAME gamepad-ui-navigation COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/gamescope_input_focus.py ${XVFB_EXECUTABLE}
+                $<TARGET_FILE:gamepad-ui-navigation>)
+            set_tests_properties(gamepad-ui-navigation PROPERTIES TIMEOUT 40)
+        endif()
+    endif()
+endif()

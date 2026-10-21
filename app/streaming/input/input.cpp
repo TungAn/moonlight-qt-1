@@ -6,11 +6,20 @@
 #include "utils.h"
 
 #include <QtGlobal>
-#include <QDir>
 #include <QGuiApplication>
 
 SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, int streamHeight)
-    : m_MultiController(prefs.multiController),
+    : m_Window(nullptr),
+      m_GamepadMouseEventType([] {
+          // Session already uses SDL_USEREVENT for frames and host feedback.
+          Uint32 type = SDL_RegisterEvents(1);
+          return type == SDL_USEREVENT ? SDL_RegisterEvents(1) : type;
+      }()),
+      m_GamescopeEventType(SDL_RegisterEvents(1)),
+      m_GamescopeSnapshot(0),
+      m_GamepadMouseTimer(0),
+      m_InputDiagnostics(qEnvironmentVariableIntValue("PYROLIGHT_INPUT_DEBUG") == 1),
+      m_MultiController(prefs.multiController),
       m_GamepadMouse(prefs.gamepadMouse),
       m_SwapMouseButtons(prefs.swapMouseButtons),
       m_ReverseScrollDirection(prefs.reverseScrollDirection),
@@ -35,6 +44,10 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_DragButton(0),
       m_NumFingersDown(0)
 {
+    if (m_InputDiagnostics) {
+        SDL_LogSetPriority(SDL_LOG_CATEGORY_INPUT, SDL_LOG_PRIORITY_INFO);
+    }
+
     // System keys are always captured when running without a DE
     if (!WMUtils::isRunningDesktopEnvironment()) {
         m_CaptureSystemKeysMode = StreamingPreferences::CSK_ALWAYS;
@@ -53,8 +66,17 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
         SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, "0");
     }
 
-    // Allow gamepad input when the app doesn't have focus if requested
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, prefs.backgroundGamepad ? "1" : "0");
+    // Receive releases while suspended so SDL's cached physical state remains
+    // usable when rearming controls. Forwarding is governed by our own policy.
+    m_ControllerInput.backgroundAllowed = prefs.backgroundGamepad;
+#ifdef Q_OS_LINUX
+    m_ControllerInput.gamingMode = qgetenv("SteamGamepadUI") == "1";
+#endif
+    m_OldBackgroundEvents = SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", SDL_HINT_OVERRIDE);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Controller input: background=%d Gaming Mode=%d",
+                prefs.backgroundGamepad, m_ControllerInput.gamingMode);
 
 #if !SDL_VERSION_ATLEAST(2, 0, 15)
     // For older versions of SDL (2.0.14 and earlier), use SDL_HINT_GRAB_KEYBOARD
@@ -225,10 +247,12 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
 
 SdlInputHandler::~SdlInputHandler()
 {
+    stopControllerInput();
+    m_GamescopeFocus.reset();
+    SDL_RemoveTimer(m_GamepadMouseTimer);
     for (int i = 0; i < MAX_GAMEPADS; i++) {
-        if (m_GamepadState[i].mouseEmulationTimer != 0) {
+        if (m_GamepadState[i].mouseEmulationActive) {
             Session::get()->notifyMouseEmulationMode(false);
-            SDL_RemoveTimer(m_GamepadState[i].mouseEmulationTimer);
         }
 #if !SDL_VERSION_ATLEAST(2, 0, 9)
         if (m_GamepadState[i].haptic != nullptr) {
@@ -256,8 +280,10 @@ SdlInputHandler::~SdlInputHandler()
     SDL_QuitSubSystem(SDL_INIT_JOYSTICK);
     SDL_assert(!SDL_WasInit(SDL_INIT_JOYSTICK));
 
-    // Return background event handling to off
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "0");
+    // Restore the effective delivery hint after our internal state tracking ends.
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,
+                            m_OldBackgroundEvents.isNull() ? nullptr : m_OldBackgroundEvents.toUtf8().constData(),
+                            SDL_HINT_OVERRIDE);
 
 #ifdef SDL_HINT_JOYSTICK_HIDAPI_STEAM
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_STEAM,
@@ -280,10 +306,20 @@ SdlInputHandler::~SdlInputHandler()
 void SdlInputHandler::setWindow(SDL_Window *window)
 {
     m_Window = window;
+    const Uint32 flags = SDL_GetWindowFlags(window);
+    m_ControllerInput.running = true;
+    m_ControllerInput.focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
+    m_ControllerInput.visible = (flags & SDL_WINDOW_SHOWN) != 0;
+    m_ControllerInput.minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
+    m_GamescopeFocus = GamescopeInputFocus::createForCurrentProcess(m_GamescopeEventType);
+    refreshGamescopeInputOwnership();
+    updateControllerInputOwnership();
 }
 
 void SdlInputHandler::notifyFocusLost()
 {
+    m_ControllerInput.focused = false;
+    updateControllerInputOwnership();
     // Release mouse cursor when another window is activated (e.g. by using ALT+TAB).
     // This lets user to interact with our window's title bar and with the buttons in it.
     // Doing this while the window is full-screen breaks the transition out of FS
@@ -299,6 +335,8 @@ void SdlInputHandler::notifyFocusLost()
 
 void SdlInputHandler::notifyFocusGained()
 {
+    m_ControllerInput.focused = true;
+    updateControllerInputOwnership();
 }
 
 bool SdlInputHandler::isCaptureActive()

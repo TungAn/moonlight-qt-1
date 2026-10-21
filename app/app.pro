@@ -144,6 +144,10 @@ unix:if(!macx|disable-prebuilts) {
             packagesExist(x11) {
                 DEFINES += HAS_X11
                 PKGCONFIG += x11
+                linux:packagesExist(xcb xau) {
+                    DEFINES += HAS_GAMESCOPE_INPUT
+                    PKGCONFIG += xcb xau
+                }
             }
         }
     }
@@ -187,6 +191,7 @@ SOURCES += \
     settings/streamingpreferences.cpp \
     streaming/input/abstouch.cpp \
     streaming/input/gamepad.cpp \
+    streaming/input/gamescopeinputfocus.cpp \
     streaming/input/input.cpp \
     streaming/input/keyboard.cpp \
     streaming/input/mouse.cpp \
@@ -236,6 +241,8 @@ HEADERS += \
     settings/streamingpreferences.h \
     settings/bitratecalculator.h \
     streaming/input/input.h \
+    streaming/input/controllerinputstate.h \
+    streaming/input/gamescopeinputfocus.h \
     streaming/input/gamepadidentity.h \
     streaming/input/gamepadfeedback.h \
     streaming/session.h \

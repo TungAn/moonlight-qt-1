@@ -3,6 +3,7 @@
 #include <QKeyEvent>
 #include <QGuiApplication>
 #include <QWindow>
+#include <QPointer>
 
 #include "settings/mappingmanager.h"
 
@@ -14,7 +15,9 @@ SdlGamepadKeyNavigation::SdlGamepadKeyNavigation(StreamingPreferences* prefs)
       m_UiNavMode(false),
       m_FirstPoll(false),
       m_HasFocus(false),
-      m_LastAxisNavigationEventTime(0)
+      m_LastAxisNavigationEventTime(0),
+      m_ObserverInitialized(false),
+      m_GamescopeSnapshot(0)
 {
     m_PollingTimer = new QTimer(this);
     connect(m_PollingTimer, &QTimer::timeout, this, &SdlGamepadKeyNavigation::onPollingTimerFired);
@@ -70,6 +73,9 @@ void SdlGamepadKeyNavigation::enable()
     }
 
     m_Enabled = true;
+    m_ObserverInitialized = false;
+    m_GamescopeSnapshot = 0;
+    m_InputOwnership.compositorAllowed = true;
 
     // Start the polling timer if the window is focused
     updateTimerState();
@@ -83,6 +89,8 @@ void SdlGamepadKeyNavigation::disable()
 
     m_Enabled = false;
     updateTimerState();
+    m_GamescopeFocus.reset(); // Join before releasing SDL's controller subsystem.
+    m_Rearm.clear();
     Q_ASSERT(!m_PollingTimer->isActive());
 
     while (!m_Gamepads.isEmpty()) {
@@ -101,21 +109,28 @@ void SdlGamepadKeyNavigation::notifyWindowFocus(bool hasFocus)
 
 void SdlGamepadKeyNavigation::onPollingTimerFired()
 {
+    if (!m_Enabled) return;
     SDL_Event event;
 
     // Update joystick state without pumping other events (see enable() comment)
     SDL_JoystickUpdate();
+    refreshInputOwnership();
 
     // Discard any pending button events on the first poll to avoid picking up
     // stale input data from the stream session (like the quit combo).
     if (m_FirstPoll) {
         SDL_FlushEvent(SDL_CONTROLLERBUTTONDOWN);
         SDL_FlushEvent(SDL_CONTROLLERBUTTONUP);
+        // Qt focus can stop this timer completely. Sample after the first
+        // joystick update, not from the cache left behind before focus loss.
+        if (m_InputOwnership.active) {
+            for (auto gamepad : std::as_const(m_Gamepads)) prepareGamepad(gamepad);
+        }
         m_FirstPoll = false;
     }
 
     // Peep events rather than polling to avoid calling SDL_PumpEvents()
-    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) == 1) {
+    while (m_Enabled && SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT) == 1) {
         switch (event.type) {
         case SDL_QUIT:
             // SDL may send us a quit event since we initialize
@@ -126,9 +141,14 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
         case SDL_CONTROLLERBUTTONDOWN:
         case SDL_CONTROLLERBUTTONUP:
         {
-            QEvent::Type type =
-                    event.type == SDL_CONTROLLERBUTTONDOWN ?
-                        QEvent::Type::KeyPress : QEvent::Type::KeyRelease;
+            refreshInputOwnership();
+            if (!m_InputOwnership.accepts(event.cbutton.timestamp) ||
+                    !m_Rearm.contains(event.cbutton.which) ||
+                    !m_Rearm[event.cbutton.which].button(event.cbutton.button,
+                        event.type == SDL_CONTROLLERBUTTONDOWN) ||
+                    event.type != SDL_CONTROLLERBUTTONDOWN) {
+                break;
+            }
 
             // Swap face buttons if needed
             if (m_Prefs->swapFaceButtons) {
@@ -152,46 +172,46 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
             case SDL_CONTROLLER_BUTTON_DPAD_UP:
                 if (m_UiNavMode) {
                     // Back-tab
-                    sendKey(type, Qt::Key_Tab, Qt::ShiftModifier);
+                    sendKeyClick(Qt::Key_Tab, Qt::ShiftModifier);
                 }
                 else {
-                    sendKey(type, Qt::Key_Up);
+                    sendKeyClick(Qt::Key_Up);
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
                 if (m_UiNavMode) {
-                    sendKey(type, Qt::Key_Tab);
+                    sendKeyClick(Qt::Key_Tab);
                 }
                 else {
-                    sendKey(type, Qt::Key_Down);
+                    sendKeyClick(Qt::Key_Down);
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                sendKey(type, Qt::Key_Left);
+                sendKeyClick(Qt::Key_Left);
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                sendKey(type, Qt::Key_Right);
+                sendKeyClick(Qt::Key_Right);
                 break;
             case SDL_CONTROLLER_BUTTON_A:
                 if (m_UiNavMode) {
-                    sendKey(type, Qt::Key_Space);
+                    sendKeyClick(Qt::Key_Space);
                 }
                 else {
-                    sendKey(type, Qt::Key_Return);
+                    sendKeyClick(Qt::Key_Return);
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_B:
-                sendKey(type, Qt::Key_Escape);
+                sendKeyClick(Qt::Key_Escape);
                 break;
             case SDL_CONTROLLER_BUTTON_X:
-                sendKey(type, Qt::Key_Menu);
+                sendKeyClick(Qt::Key_Menu);
                 break;
             case SDL_CONTROLLER_BUTTON_Y:
             case SDL_CONTROLLER_BUTTON_START:
                 // HACK: We use this keycode to inform main.qml
                 // to show the settings when Key_Menu is handled
                 // by the control in focus.
-                sendKey(type, Qt::Key_Hangup);
+                sendKeyClick(Qt::Key_Hangup);
                 break;
             default:
                 break;
@@ -199,6 +219,7 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
             break;
         }
         case SDL_CONTROLLERDEVICEADDED:
+        {
             SDL_GameController* gc = SDL_GameControllerOpen(event.cdevice.which);
             if (gc != nullptr) {
                 // SDL_CONTROLLERDEVICEADDED can be reported multiple times for the same
@@ -207,6 +228,7 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
                 // before we've processed the add event.
                 if (!m_Gamepads.contains(gc)) {
                     m_Gamepads.append(gc);
+                    prepareGamepad(gc);
                 }
                 else {
                     // We already have this game controller open
@@ -215,65 +237,138 @@ void SdlGamepadKeyNavigation::onPollingTimerFired()
             }
             break;
         }
+        case SDL_CONTROLLERDEVICEREMOVED:
+            for (qsizetype i = m_Gamepads.size(); i-- > 0;) {
+                SDL_GameController* gamepad = m_Gamepads[i];
+                if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gamepad)) == event.cdevice.which) {
+                    m_Rearm.remove(event.cdevice.which);
+                    m_Gamepads.removeAt(i);
+                    SDL_GameControllerClose(gamepad);
+                }
+            }
+            break;
+        }
     }
 
     // Handle analog sticks by polling
     for (auto gc : std::as_const(m_Gamepads)) {
+        if (!m_Enabled) break;
+        refreshInputOwnership();
+        if (!m_InputOwnership.active) break;
         short leftX = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
         short leftY = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);
+        auto& rearm = m_Rearm[SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gc))];
+        if (!rearm.axis(SDL_CONTROLLER_AXIS_LEFTX, leftX, false)) leftX = 0;
+        if (!rearm.axis(SDL_CONTROLLER_AXIS_LEFTY, leftY, false)) leftY = 0;
         if (SDL_GetTicks() - m_LastAxisNavigationEventTime < AXIS_NAVIGATION_REPEAT_DELAY) {
             // Do nothing
         }
         else if (leftY < -30000) {
             if (m_UiNavMode) {
                 // Back-tab
-                sendKey(QEvent::Type::KeyPress, Qt::Key_Tab, Qt::ShiftModifier);
-                sendKey(QEvent::Type::KeyRelease, Qt::Key_Tab, Qt::ShiftModifier);
+                sendKeyClick(Qt::Key_Tab, Qt::ShiftModifier);
             }
             else {
-                sendKey(QEvent::Type::KeyPress, Qt::Key_Up);
-                sendKey(QEvent::Type::KeyRelease, Qt::Key_Up);
+                sendKeyClick(Qt::Key_Up);
             }
 
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
         else if (leftY > 30000) {
             if (m_UiNavMode) {
-                sendKey(QEvent::Type::KeyPress, Qt::Key_Tab);
-                sendKey(QEvent::Type::KeyRelease, Qt::Key_Tab);
+                sendKeyClick(Qt::Key_Tab);
             }
             else {
-                sendKey(QEvent::Type::KeyPress, Qt::Key_Down);
-                sendKey(QEvent::Type::KeyRelease, Qt::Key_Down);
+                sendKeyClick(Qt::Key_Down);
             }
 
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
         else if (leftX < -30000) {
-            sendKey(QEvent::Type::KeyPress, Qt::Key_Left);
-            sendKey(QEvent::Type::KeyRelease, Qt::Key_Left);
+            sendKeyClick(Qt::Key_Left);
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
         else if (leftX > 30000) {
-            sendKey(QEvent::Type::KeyPress, Qt::Key_Right);
-            sendKey(QEvent::Type::KeyRelease, Qt::Key_Right);
+            sendKeyClick(Qt::Key_Right);
             m_LastAxisNavigationEventTime = SDL_GetTicks();
         }
     }
 }
 
-void SdlGamepadKeyNavigation::sendKey(QEvent::Type type, Qt::Key key, Qt::KeyboardModifiers modifiers)
+void SdlGamepadKeyNavigation::sendKeyClick(Qt::Key key, Qt::KeyboardModifiers modifiers)
 {
+    refreshInputOwnership();
+    if (!m_InputOwnership.active) return;
     QGuiApplication* app = static_cast<QGuiApplication*>(QGuiApplication::instance());
-    QWindow* focusWindow = app->focusWindow();
+    QPointer<QWindow> focusWindow = app->focusWindow();
     if (focusWindow != nullptr) {
-        QKeyEvent keyPressEvent(type, key, modifiers);
-        app->sendEvent(focusWindow, &keyPressEvent);
+        // Complete each accepted navigation action synchronously. A controller
+        // held across an overlay must not leave a Qt control half-pressed, then
+        // activate it on release after the overlay takes ownership.
+        QKeyEvent press(QEvent::KeyPress, key, modifiers);
+        app->sendEvent(focusWindow, &press);
+        if (focusWindow) {
+            QKeyEvent release(QEvent::KeyRelease, key, modifiers);
+            app->sendEvent(focusWindow, &release);
+        }
     }
+}
+
+void SdlGamepadKeyNavigation::prepareGamepad(SDL_GameController* gamepad)
+{
+    auto& rearm = m_Rearm[SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gamepad))];
+    rearm = {};
+    for (unsigned button = 0; button < SDL_CONTROLLER_BUTTON_MAX && button < 32; ++button) {
+        if (SDL_GameControllerGetButton(gamepad, SDL_GameControllerButton(button))) {
+            rearm.buttons |= uint32_t(1) << button;
+        }
+    }
+    for (unsigned axis = 0; axis <= SDL_CONTROLLER_AXIS_LEFTY; ++axis) {
+        if (abs(SDL_GameControllerGetAxis(gamepad, SDL_GameControllerAxis(axis))) > 8000) {
+            rearm.axes |= uint8_t(1) << axis;
+        }
+    }
+}
+
+void SdlGamepadKeyNavigation::updateInputOwnership()
+{
+    m_InputOwnership.running = m_Enabled;
+    m_InputOwnership.focused = m_HasFocus;
+    m_InputOwnership.visible = true; // QML passes visible && active as focus.
+    if (!m_InputOwnership.update(SDL_GetTicks())) return;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Controller UI ownership: %s (window=%d known=%d pending=%d)",
+                m_InputOwnership.active ? "active" : "suspended", m_HasFocus,
+                !!(m_GamescopeSnapshot & GamescopeInputFocus::Known),
+                !!(m_GamescopeSnapshot & GamescopeInputFocus::Pending));
+    SDL_FlushEvents(SDL_CONTROLLERBUTTONDOWN, SDL_CONTROLLERBUTTONUP);
+    m_LastAxisNavigationEventTime = 0;
+    if (m_InputOwnership.active) {
+        for (auto gamepad : std::as_const(m_Gamepads)) prepareGamepad(gamepad);
+    }
+}
+
+void SdlGamepadKeyNavigation::refreshInputOwnership()
+{
+    if (m_GamescopeFocus) {
+        const uint64_t snapshot = m_GamescopeFocus->snapshot();
+        if ((snapshot >> GamescopeInputFocus::GenerationShift) !=
+                (m_GamescopeSnapshot >> GamescopeInputFocus::GenerationShift)) {
+            m_InputOwnership.compositorAllowed = false;
+            updateInputOwnership();
+        }
+        m_GamescopeSnapshot = snapshot;
+        m_InputOwnership.compositorAllowed = GamescopeInputFocus::permits(snapshot);
+    }
+    updateInputOwnership();
 }
 
 void SdlGamepadKeyNavigation::updateTimerState()
 {
+    if (m_Enabled && m_HasFocus && !m_ObserverInitialized) {
+        m_ObserverInitialized = true;
+        m_GamescopeFocus = GamescopeInputFocus::createForCurrentProcess(0);
+    }
+    refreshInputOwnership();
     if (m_PollingTimer->isActive() && (!m_HasFocus || !m_Enabled)) {
         m_PollingTimer->stop();
     }

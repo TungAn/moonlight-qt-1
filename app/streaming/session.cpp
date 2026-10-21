@@ -2165,6 +2165,10 @@ void Session::exec()
             continue;
         }
 #endif
+        if (m_InputHandler->handleInputOwnershipEvent(event) ||
+                m_InputHandler->handleGamepadMouseEvent(event)) {
+            continue;
+        }
         switch (event.type) {
         case SDL_QUIT:
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -2488,6 +2492,8 @@ void Session::exec()
     }
 
 DispatchDeferredCleanup:
+    m_InputHandler->stopControllerInput();
+
     // Switch back to synchronous logging mode
     StreamUtils::exitAsyncLoggingMode();
 
