@@ -64,6 +64,10 @@ common-c reassembly ─▶ submitDecodeUnit ─▶ single-slot mailbox ─▶ re
 - **Loss.** Native whole-frame FEC is used; incomplete native frames are dropped,
   and the next frame resumes decoding without an IDR request because every frame
   is intra-coded.
+- **Renderer refresh.** After creating or resetting the renderer, request an
+  independent frame through the normal IDR control message. Pyroshine replays
+  its cached frame, so reconnect does not wait for a new desktop redraw if the
+  first arriving picture was discarded while the decoder lock was held.
 - **Decode path.** The integration uses PyroWave's device preference: the
   fragment decode path on mobile-class GPUs and the compute iDWT path on desktop
   GPUs. `PYROWAVE_FRAGMENT_PATH=1` or `=0` forces either path for benchmarking.
