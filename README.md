@@ -139,6 +139,21 @@ pacing, VRR settings, audio configuration and quality, window mode, decoder, and
 renderer. Input, interface, and language settings stay global. Settings from
 before profiles existed become the **Default** profile.
 
+## Steam Deck library launches (PyroDeck)
+
+[PyroDeck](https://github.com/karsyboy/pyrodeck) starts Pyrolight from a game's
+Steam library page. It reads the host's apps with:
+
+```sh
+pyrolight list --json HOST
+```
+
+This prints one JSON line: `schema` (1), the `host`'s `name` and `uuid`, and
+`apps` with each app's `name`, `id`, `hdrSupported`, `hidden` and `sources`.
+`sources` holds the launcher identities a Pyroshine host reports for the app,
+such as `steam:892970`; it is empty for other hosts. Pyrolight uses its own
+pairing for the request, as for `list` and `stream`.
+
 ## Troubleshooting
 
 - **Burst packet loss on Linux:** high PyroWave bitrates need larger UDP receive

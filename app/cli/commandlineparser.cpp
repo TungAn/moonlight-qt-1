@@ -586,6 +586,7 @@ void ListCommandLineParser::parse(const QStringList &args)
     parser.addPositionalArgument("host", "Host computer name, UUID, or IP address", "<host>");
 
     parser.addFlagOption("csv",     "Print as CSV with additional information");
+    parser.addFlagOption("json",    "Print as JSON with additional information, including host-reported launcher identities");
     parser.addFlagOption("verbose", "Displays additional information");
 
     if (!parser.parse(args)) {
@@ -596,6 +597,10 @@ void ListCommandLineParser::parse(const QStringList &args)
 
 
     m_PrintCSV = parser.isSet("csv");
+    m_PrintJSON = parser.isSet("json");
+    if (m_PrintCSV && m_PrintJSON) {
+        parser.showError("--csv and --json cannot be combined");
+    }
     m_Verbose = parser.isSet("verbose");
 
     // This method will not return and terminates the process if --version or
@@ -618,6 +623,11 @@ QString ListCommandLineParser::getHost() const
 bool ListCommandLineParser::isPrintCSV() const
 {
     return m_PrintCSV;
+}
+
+bool ListCommandLineParser::isPrintJSON() const
+{
+    return m_PrintJSON;
 }
 
 bool ListCommandLineParser::isVerbose() const

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QSettings>
+#include <QStringList>
 
 class NvApp
 {
@@ -15,7 +16,8 @@ public:
                 hdrSupported == other.hdrSupported &&
                 isAppCollectorGame == other.isAppCollectorGame &&
                 hidden == other.hidden &&
-                directLaunch == other.directLaunch;
+                directLaunch == other.directLaunch &&
+                pyroshineSources == other.pyroshineSources;
     }
 
     bool operator!=(const NvApp& other) const
@@ -39,6 +41,11 @@ public:
     bool isAppCollectorGame = false;
     bool hidden = false;
     bool directLaunch = false;
+
+    // Launcher identities ("steam:892970") a Pyroshine host reports for this
+    // app in <PyroshineSource>. Host metadata only: never persisted, refreshed
+    // with every app list.
+    QStringList pyroshineSources;
 };
 
 Q_DECLARE_METATYPE(NvApp)

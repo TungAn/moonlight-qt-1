@@ -5,6 +5,9 @@
 #include "backend/computerseeker.h"
 
 #include <QCoreApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #define COMPUTER_SEEK_TIMEOUT 30000
 
@@ -96,7 +99,15 @@ public:
                         NvHTTP http{m_Computer};
 
                         const auto appList = http.getAppList();
-                        m_Arguments.isPrintCSV() ? printAppsCSV(appList) : printApps(appList);
+                        if (m_Arguments.isPrintJSON()) {
+                            printAppsJSON(appList);
+                        }
+                        else if (m_Arguments.isPrintCSV()) {
+                            printAppsCSV(appList);
+                        }
+                        else {
+                            printApps(appList);
+                        }
 
                         QCoreApplication::exit(0);
                     } catch (std::exception& exception) {
@@ -127,6 +138,34 @@ public:
         for (int i = 0; i < apps.length(); i++) {
             printAppCSV(apps[i]);
         }
+    }
+
+    // Machine-readable listing for integrations such as PyroDeck. The schema
+    // number changes only on incompatible changes; consumers ignore unknown keys.
+    // "sources" holds the launcher identities a Pyroshine host reports
+    // ("steam:892970"); it is empty for other hosts and for manual entries.
+    void printAppsJSON(const QVector<NvApp>& apps) const
+    {
+        QJsonArray jsonApps;
+        for (const NvApp& app : apps) {
+            QJsonObject jsonApp;
+            jsonApp["name"] = app.name;
+            jsonApp["id"] = app.id;
+            jsonApp["hdrSupported"] = app.hdrSupported;
+            jsonApp["hidden"] = app.hidden;
+            jsonApp["sources"] = QJsonArray::fromStringList(app.pyroshineSources);
+            jsonApps.append(jsonApp);
+        }
+
+        QJsonObject host;
+        host["name"] = m_Computer->name;
+        host["uuid"] = m_Computer->uuid;
+
+        QJsonObject root;
+        root["schema"] = 1;
+        root["host"] = host;
+        root["apps"] = jsonApps;
+        fprintf(stdout, "%s\n", QJsonDocument(root).toJson(QJsonDocument::Compact).constData());
     }
 
     void printAppCSV(NvApp app) const

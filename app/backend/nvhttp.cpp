@@ -364,6 +364,12 @@ NvHTTP::getAppList()
                 else if (XML_NAME_EQUALS(name, "IsAppCollectorGame")) {
                     apps.last().isAppCollectorGame = xmlReader.readElementText() == "1";
                 }
+                else if (XML_NAME_EQUALS(name, "PyroshineSource")) {
+                    QString source = xmlReader.readElementText();
+                    if (!source.isEmpty()) {
+                        apps.last().pyroshineSources.append(source);
+                    }
+                }
             }
         }
     }

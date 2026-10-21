@@ -86,10 +86,12 @@ public:
 
     QString getHost() const;
     bool isPrintCSV() const;
+    bool isPrintJSON() const;
     bool isVerbose() const;
 
 private:
     QString m_Host;
     bool m_PrintCSV;
+    bool m_PrintJSON;
     bool m_Verbose;
 };
