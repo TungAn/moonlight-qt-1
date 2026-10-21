@@ -22,7 +22,7 @@ PYROWAVE_PREFIX=${PYROWAVE_PREFIX:-"$SOURCE_ROOT/build/pyrowave-appimage-prefix"
 
 # Idempotent: pins Granite and applies (or verifies) the fork's Granite patches.
 (cd "$PYROWAVE_SOURCE" && ./checkout_granite.sh)
-[ "$(git -C "$PYROWAVE_SOURCE/Granite" rev-parse HEAD 2>/dev/null)" = "fb178c8080d163419e8d20f10715c61c53c1ec9b" ] || \
+[ "$(git -C "$PYROWAVE_SOURCE/Granite" rev-parse HEAD 2>/dev/null)" = "53090429539bf3404250d18fe58db971f0907c04" ] || \
   fail "PyroWave's pinned Granite checkout is missing or incorrect"
 
 cmake -S "$PYROWAVE_SOURCE" -B "$PYROWAVE_BUILD" \

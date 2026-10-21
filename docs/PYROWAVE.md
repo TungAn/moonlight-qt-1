@@ -118,9 +118,9 @@ live network rate controller.
 
 | Item | Value |
 | --- | --- |
-| Source | [`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) at `b09e1365155e91710497be22eac6500f04bf74ea` |
+| Source | [`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) at `78084ece21b1725d193442a7619660625f3f735a` |
 | C API | `pyrowave-shared` 1.1.0; `app/app.pro` rejects other versions |
-| Granite | `fb178c8080d163419e8d20f10715c61c53c1ec9b` via `checkout_granite.sh` |
+| Granite | `53090429539bf3404250d18fe58db971f0907c04` via `checkout_granite.sh` |
 | Bitstream family | `186f0393` |
 
 The pin appears in [build-appimage.yml](../.github/workflows/build-appimage.yml),

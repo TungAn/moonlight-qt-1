@@ -26,16 +26,16 @@ PyroWave support requires the fork's C API from the pinned
 
 | Item | Value |
 | --- | --- |
-| Revision | `b09e1365155e91710497be22eac6500f04bf74ea` |
+| Revision | `78084ece21b1725d193442a7619660625f3f735a` |
 | C API | `pyrowave-shared` 1.1.0 (checked by `app/app.pro`) |
-| Granite | `fb178c8080d163419e8d20f10715c61c53c1ec9b`, from `checkout_granite.sh` |
+| Granite | `53090429539bf3404250d18fe58db971f0907c04`, from `checkout_granite.sh` |
 
 Do not substitute upstream PyroWave or another ABI. Build and install it
 without the development applications:
 
 ```sh
 git clone https://github.com/karsyboy/pyrowave.git deps/PyroWave
-git -C deps/PyroWave checkout b09e1365155e91710497be22eac6500f04bf74ea
+git -C deps/PyroWave checkout 78084ece21b1725d193442a7619660625f3f735a
 (cd deps/PyroWave && ./checkout_granite.sh)
 cmake -S deps/PyroWave -B build/pyrowave \
   -DCMAKE_BUILD_TYPE=Release \
