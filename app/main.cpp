@@ -15,6 +15,7 @@
 #include <QRegularExpression>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTimer>
 
 #ifdef Q_OS_UNIX
 #include <sys/socket.h>
@@ -456,6 +457,56 @@ int main(int argc, char *argv[])
     if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("settings")) {
         QCoreApplication app(argc, argv);
         return SettingsApi::runCommand(app.arguments());
+    }
+
+    QString action;
+    bool helpOrVersion = false;
+    for (int i = 1; i < argc; ++i) {
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        if (arg == "--") break;
+        if (arg == "--help" || arg == "-help" || arg == "-h" ||
+            arg == "--version" || arg == "-version" || arg == "-v") {
+            helpOrVersion = true;
+        }
+        if (action.isEmpty() && (arg.compare("list", Qt::CaseInsensitive) == 0 ||
+            arg.compare("stream", Qt::CaseInsensitive) == 0 ||
+            arg.compare("quit", Qt::CaseInsensitive) == 0 ||
+            arg.compare("pair", Qt::CaseInsensitive) == 0)) {
+            action = arg.toLower();
+        }
+    }
+    // Decky runs outside the graphical session. Catalog, artwork and network
+    // queries use QImage/network APIs only; never initialize Qt's platform plugin
+    // or SDL video for them. In particular, the AppImage has no EGLFS plugin.
+    if (action == "list" || helpOrVersion) {
+        QCoreApplication app(argc, argv);
+        const auto command = GlobalCommandLineParser().parse(app.arguments());
+        switch (command) {
+        case GlobalCommandLineParser::ListRequested: {
+            ListCommandLineParser listParser;
+            listParser.parse(app.arguments());
+            IdentityManager::get();
+            ComputerManager manager(StreamingPreferences::get());
+            CliListApps::Launcher launcher(listParser.getHost(), listParser);
+            // Start after the event loop so immediate failures can exit it.
+            QTimer::singleShot(0, &launcher, [&] { launcher.execute(&manager); });
+            const int result = app.exec();
+            QThreadPool::globalInstance()->waitForDone(30000);
+            return result;
+        }
+        case GlobalCommandLineParser::StreamRequested:
+            StreamCommandLineParser().parse(app.arguments(), nullptr);
+            break;
+        case GlobalCommandLineParser::QuitRequested:
+            QuitCommandLineParser().parse(app.arguments());
+            break;
+        case GlobalCommandLineParser::PairRequested:
+            PairCommandLineParser().parse(app.arguments());
+            break;
+        case GlobalCommandLineParser::NormalStartRequested:
+            break;
+        }
+        return 1; // Help/version parsers exit before reaching this point.
     }
 
     // Override the default QML cache directory with the one we chose

@@ -192,6 +192,11 @@ jobs:
             readelf -d app/pyrolight | grep -F 'libpyrowave-shared.so.1'
           fi
 
+      - name: Test headless catalog and capability queries
+        run: |
+          export LD_LIBRARY_PATH="${PWD}/build/pyrowave-install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          python3 tests/headless_cli.py build/app/app/pyrolight
+
       # The smoke test needs a Vulkan display to run; CI keeps it compiling.
       - name: Build the PyroWave renderer smoke test
         if: matrix.pyrowave

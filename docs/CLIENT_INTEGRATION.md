@@ -78,6 +78,13 @@ the same application. Use a matching Pyroshine build for the host-side check.
 catalog includes every app advertised by the host. Original Steam app IDs are
 in `sources` as `steam:ID`, separate from GameStream `id`.
 
+Catalog, artwork and network commands run with `QCoreApplication`, without Qt
+platform plugins, SDL video or a graphical session. Help/version and
+`stream --help` capability queries also run without a display. This allows
+Decky's backend service to query the client even when its environment has no
+`DISPLAY` or `WAYLAND_DISPLAY`. Pairing, certificate pins and authenticated
+HTTPS requests remain the same as in the GUI.
+
 `list --json --artwork-id ID HOST` verifies the app is advertised and returns
 `schema`, `hostUuid`, `appId` and `image` (PNG data URI, at most 300×450).
 The request uses Pyrolight's authenticated host transport. Missing artwork
@@ -107,3 +114,9 @@ cross-process persistence. CI runs both. Run standard and PyroWave client
 builds, and the controller/input suites described in CONTRIBUTING.md.
 Real SteamOS overlays/focus, suspend, codecs, displays and retained-game
 reconnects require a real client and host; these tests do not establish them.
+
+After building the client, run `python3 tests/headless_cli.py build/app/app/pyrolight`
+(adjust the binary path for your build). This exercises the real CLI against a
+temporary pinned HTTPS fixture with invalid Qt/SDL video platforms, including
+catalog source IDs, PNG artwork, receive-buffer checks, unpaired refusal and
+help/capability queries. It also accepts an AppImage path and uses extract-and-run.

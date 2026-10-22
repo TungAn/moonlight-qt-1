@@ -6,6 +6,10 @@ it, and the Linux AppImage ships both paths. This document describes the
 selection, the AppImage packaging boundary for the host graphics stack, and the
 diagnostics.
 
+`settings`, `list` (including artwork and network tools), and CLI help/version
+queries do not initialize a display. The backend selection below applies to the
+GUI, pairing, streaming and interactive quit commands.
+
 ## Backend selection
 
 Qt selects its platform plugin when the `QGuiApplication` is created. Qt 6.3+

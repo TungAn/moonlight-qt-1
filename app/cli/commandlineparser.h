@@ -63,6 +63,7 @@ public:
     StreamCommandLineParser();
     virtual ~StreamCommandLineParser();
 
+    // Null preferences permit help/version queries only, without reading settings.
     void parse(const QStringList &args, StreamingPreferences *preferences);
 
     QString getHost() const;

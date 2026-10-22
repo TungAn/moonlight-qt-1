@@ -408,6 +408,12 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
 
     parser.handleUnknownOptions();
 
+    // Help and capability probes must not inspect or change streaming settings.
+    parser.handleHelpAndVersionOptions();
+    if (preferences == nullptr) {
+        parser.showError("Expected --help or --version");
+    }
+
     // Resolve display's width and height
     if (parser.isSet("settings-revision") && parser.value("settings-revision") != preferences->integrationSnapshot().value("revision").toString())
         parser.showError("Pyrolight settings changed before launch; retry with the current profile");
