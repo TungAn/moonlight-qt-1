@@ -17,6 +17,7 @@ Moonlight's standard codecs and features and adds an explicitly selected
 - H.264, HEVC, and AV1 with any Moonlight-compatible host.
 - Network bandwidth calibration (UDP on Pyroshine hosts, any codec) and PyroWave receive-buffer diagnostics.
 - Named streaming profiles for switching between sets of stream settings.
+- [Local integration API](docs/CLIENT_INTEGRATION.md) for PyroDeck: authoritative settings/profile transactions, stable-ID launches and lifecycle events.
 - [VRR presentation](docs/VRR.md): frames are shown on the host's frame timing,
   so a VRR display follows the game's frame rate with any host.
 - Native Wayland on Linux, with automatic fallback to X11/XWayland. **Settings →

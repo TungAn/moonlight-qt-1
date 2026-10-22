@@ -187,6 +187,7 @@ void Session::clRumble(unsigned short controllerNumber, unsigned short lowFreqMo
 
 void Session::clConnectionStatusUpdate(int connectionStatus)
 {
+    emit s_ActiveSession->connectionQualityChanged(connectionStatus);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Connection status update: %d",
                 connectionStatus);
@@ -1884,6 +1885,19 @@ bool Session::startConnectionAsync()
 
     emit connectionStarted();
     return true;
+}
+
+QJsonObject Session::integrationDiagnostics() const
+{
+    // Negotiation is complete before connectionStarted. Report only immutable
+    // negotiated values; decoder/presenter counters remain owned by the overlay.
+    const char* codec = m_ActiveVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE ? "PyroWave" :
+                        m_ActiveVideoFormat & VIDEO_FORMAT_MASK_AV1 ? "AV1" :
+                        m_ActiveVideoFormat & VIDEO_FORMAT_MASK_H265 ? "HEVC" : "H.264";
+    return {{"codec", QString::fromLatin1(codec)}, {"width", m_ActiveVideoWidth},
+        {"height", m_ActiveVideoHeight}, {"negotiatedFps", m_ActiveVideoFrameRate},
+        {"bitrateKbps", m_StreamConfig.bitrate}, {"yuv444", bool(m_ActiveVideoFormat & VIDEO_FORMAT_MASK_YUV444)},
+        {"videoFormat", m_ActiveVideoFormat}, {"displayDriver", QString::fromUtf8(SDL_GetCurrentVideoDriver())}};
 }
 
 void Session::flushWindowEvents()

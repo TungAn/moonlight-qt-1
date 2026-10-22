@@ -161,7 +161,7 @@ public:
     parseQuad(QString quad);
 
     void
-    quitApp();
+    quitApp(int expectedAppId = 0);
 
     void
     startApp(QString verb,

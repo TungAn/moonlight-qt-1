@@ -105,7 +105,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           set -euo pipefail
-          for test in streamingpreferences brandtranslator udpprobe; do
+          for test in streamingpreferences settingsapi brandtranslator udpprobe; do
             qmake6 "app/tests/${test}_test.pro" -o "build/${test}-test/Makefile"
             make -C "build/${test}-test" -j"$(nproc)"
             "./build/${test}-test/${test}-test"

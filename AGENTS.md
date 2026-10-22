@@ -43,7 +43,7 @@ Related repositories:
 | `app/gui/SettingsView.qml` | Settings UI, including profiles, PyroWave and network tools |
 | `app/gui/sdlgamepadkeynavigation.*` | Qt menu controller navigation, shared Gamescope ownership and held-control rearming |
 | `app/displaybackend.*` | Linux display backend policy: Qt platform preference, SDL driver matching, Settings diagnostic |
-| `app/cli/commandlineparser.cpp` | CLI options, including `--video-codec PyroWave` |
+| `app/cli/commandlineparser.cpp`, `settingsapi.*` | CLI options, stable-ID launch and same-user settings IPC; contract in `docs/CLIENT_INTEGRATION.md` |
 | `moonlight-common-c/moonlight-common-c/` | Submodule fork: RTSP/SDP, RTP/FEC reassembly, PyroWave dialects, controller protocol |
 | `tests/` | Standalone CMake unit tests for fork code |
 | `app/tests/` | Renderer smoke test, streaming-preferences, brand translator and UDP calibration Qt tests |
@@ -140,7 +140,7 @@ ctest --test-dir build/tests --output-on-failure
 
 - Protocol or framing changes: also run common-c's suite with
   `-DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON`.
-- Preferences or profile changes: run `app/tests/streamingpreferences_test.pro`.
+- Preferences or profile changes: run `app/tests/streamingpreferences_test.pro` and `app/tests/settingsapi_test.pro`.
 - Decoder or renderer changes: build with `CONFIG+=enable-pyrowave` and run the
   renderer smoke test on a Vulkan-capable display.
 - Documentation-only work needs Markdown, relative-link and path checks and

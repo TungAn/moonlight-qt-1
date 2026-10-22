@@ -165,12 +165,20 @@ cmake --build build/common-c-tests
 ctest --test-dir build/common-c-tests --output-on-failure
 ```
 
-Streaming-profile persistence has a Qt test:
+Streaming-profile persistence and settings registry validation have a Qt test:
 
 ```sh
 qmake6 app/tests/streamingpreferences_test.pro -o build/prefs-test/Makefile
 make -C build/prefs-test
 ./build/prefs-test/streamingpreferences-test
+```
+
+Local integration IPC and cross-process revision checks have a Qt test:
+
+```sh
+qmake6 app/tests/settingsapi_test.pro -o build/settingsapi-test/Makefile
+make -C build/settingsapi-test
+./build/settingsapi-test/settingsapi-test
 ```
 
 The UDP calibration receiver (reply parsing, the control-datagram vector shared

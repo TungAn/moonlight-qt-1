@@ -129,6 +129,7 @@ public:
     void flushWindowEvents();
 
     void setShouldExit(bool quitHostApp = false);
+    QJsonObject integrationDiagnostics() const;
 
 signals:
     void stageStarting(QString stage);
@@ -136,6 +137,7 @@ signals:
     void stageFailed(QString stage, int errorCode, QString failingPorts);
 
     void connectionStarted();
+    void connectionQualityChanged(int status);
 
     void displayLaunchError(QString text);
 

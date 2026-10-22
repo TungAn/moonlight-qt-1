@@ -268,12 +268,12 @@ NvHTTP::startApp(QString verb,
 }
 
 void
-NvHTTP::quitApp()
+NvHTTP::quitApp(int expectedAppId)
 {
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    "cancel",
-                                   nullptr,
+                                   expectedAppId == 0 ? QString() : "expectedAppId=" + QString::number(expectedAppId),
                                    QUIT_TIMEOUT_MS);
 
     qInfo() << "Quit response:" << response;

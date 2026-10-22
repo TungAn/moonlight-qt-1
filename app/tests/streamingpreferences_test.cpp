@@ -1,6 +1,8 @@
 #include "settings/streamingpreferences.h"
 
 #include <QCoreApplication>
+#include <QJsonArray>
+#include <QMetaProperty>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -36,6 +38,108 @@ private slots:
         settings.clear();
         settings.sync();
         m_Preferences->reload();
+    }
+
+
+    void integrationRegistryCoversEveryWritablePreference()
+    {
+        const auto snapshot = m_Preferences->integrationSnapshot();
+        const auto registry = snapshot.value("registry").toArray();
+        const auto values = snapshot.value("values").toObject();
+        int writable = 0;
+        const auto meta = m_Preferences->metaObject();
+        for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
+            const auto property = meta->property(i);
+            if (!property.isWritable()) continue;
+            ++writable;
+            QVERIFY(values.contains(property.name()));
+            QVERIFY(values.value(property.name()).isBool() || values.value(property.name()).isDouble());
+            int matches = 0;
+            for (const auto& value : registry) {
+                const auto descriptor = value.toObject();
+                if (descriptor.value("key").toString() != property.name()) continue;
+                ++matches;
+                QCOMPARE(descriptor.value("application").toString(), QStringLiteral("reconnect"));
+                QVERIFY(!descriptor.value("category").toString().isEmpty());
+                QVERIFY(descriptor.value("scope").toString() == "global" || descriptor.value("scope").toString() == "profile");
+            }
+            QCOMPARE(matches, 1);
+        }
+        QCOMPARE(registry.size(), writable);
+        QVERIFY(values.contains("packetSize"));
+    }
+
+    void integrationTransactionsRejectStaleWritesAndValidateAtomically()
+    {
+        auto initial = m_Preferences->integrationSnapshot();
+        auto request = QJsonObject{{"schema", 1}, {"operation", "patch"}, {"revision", initial.value("revision")},
+            {"values", QJsonObject{{"width", 2560}, {"height", -1}}}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+        QCOMPARE(m_Preferences->width, 1920);
+        request["values"] = QJsonObject{{"width", 2560}, {"height", 1440}, {"audioConfig", 2}};
+        request["operation"] = "validate";
+        QVERIFY(m_Preferences->integrationRequest(request).value("ok").toBool());
+        QCOMPARE(m_Preferences->width, 1920);
+        request["operation"] = "patch";
+        auto result = m_Preferences->integrationRequest(request);
+        QVERIFY(result.value("ok").toBool());
+        QCOMPARE(m_Preferences->width, 2560);
+        QCOMPARE(m_Preferences->audioConfig, StreamingPreferences::AC_71_SURROUND);
+        QCOMPARE(m_Preferences->bitrateKbps, StreamingPreferences::getDefaultBitrate(2560, 1440, 60, false, 0, false));
+        QCOMPARE(m_Preferences->integrationRequest(request).value("error").toObject().value("code").toString(), QStringLiteral("conflict"));
+        m_Preferences->reload();
+        QCOMPARE(m_Preferences->width, 2560);
+        QCOMPARE(m_Preferences->audioConfig, StreamingPreferences::AC_71_SURROUND);
+    }
+
+    void integrationGlobalSettingsAndProfileOperationsShareQmlState()
+    {
+        auto initial = m_Preferences->integrationSnapshot();
+        auto created = m_Preferences->integrationRequest({{"schema", 1}, {"operation", "create"},
+            {"revision", initial.value("revision")}, {"name", "Deck"}});
+        QVERIFY(created.value("ok").toBool());
+        QCOMPARE(m_Preferences->profileIds().size(), 2);
+        const auto profile = m_Preferences->activeProfileId();
+        auto changed = m_Preferences->integrationRequest({{"schema", 1}, {"operation", "patch"},
+            {"revision", created.value("revision")}, {"values", QJsonObject{{"backgroundGamepad", false}, {"fps", 90}}}});
+        QVERIFY(changed.value("ok").toBool());
+        QVERIFY(m_Preferences->activateProfile("default"));
+        QCOMPARE(m_Preferences->fps, 60);
+        QVERIFY(!m_Preferences->backgroundGamepad);
+        // An intervening QML operation invalidates the CLI transaction.
+        auto stale = m_Preferences->integrationRequest({{"schema", 1}, {"operation", "rename"},
+            {"revision", changed.value("revision")}, {"profileId", profile}, {"name", "TV"}});
+        QVERIFY(!stale.value("ok").toBool());
+        auto latest = m_Preferences->integrationSnapshot();
+        QVERIFY(m_Preferences->integrationRequest({{"schema", 1}, {"operation", "activate"},
+            {"revision", latest.value("revision")}, {"profileId", profile}}).value("ok").toBool());
+        QCOMPARE(m_Preferences->fps, 90);
+        latest = m_Preferences->integrationSnapshot();
+        QVERIFY(m_Preferences->integrationRequest({{"schema", 1}, {"operation", "restore"},
+            {"revision", latest.value("revision")}}).value("ok").toBool());
+        QCOMPARE(m_Preferences->fps, 60);
+        QVERIFY(!m_Preferences->backgroundGamepad);
+    }
+
+    void integrationCapabilitiesAndVrrDependencies()
+    {
+        auto request = QJsonObject{{"schema", 1}, {"operation", "patch"},
+            {"revision", m_Preferences->integrationSnapshot().value("revision")},
+            {"values", QJsonObject{{"enableVrr", true}, {"enableVsync", false}}}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+        request["values"] = QJsonObject{{"enableVrr", true}, {"vrrLatencyMode", 0}, {"vrrBufferPerMille", 750}};
+        QVERIFY(m_Preferences->integrationRequest(request).value("ok").toBool());
+        QCOMPARE(m_Preferences->vrrBufferPerMille(), 750);
+        QCOMPARE(m_Preferences->vrrLatencyMode, 0);
+        request["revision"] = m_Preferences->integrationSnapshot().value("revision");
+        request["values"] = QJsonObject{{"fps", 59.5}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+        request["values"] = QJsonObject{{"fps", true}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+        request["values"] = QJsonObject{{"videoCodecConfig", 3}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+        request["values"] = QJsonObject{{"recommendedFullScreenMode", 2}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
     }
 
     void freshInstallCreatesDefault()
