@@ -1,0 +1,259 @@
+---
+name: Build Linux AppImage (arm64)
+
+# build-appimage.yml's AppImage job on an arm64 runner. The LunarG Vulkan SDK
+# apt repository has no arm64 packages, so the Vulkan headers, loader and
+# glslang are built from source; .deb/.rpm/Arch packaging is left out.
+
+on:
+  push:
+    branches:
+      - pyrolight-arm64
+  workflow_dispatch:
+    inputs:
+      ci_version:
+        description: Version string used in the AppImage name
+        required: false
+        default: 6.2.7-arm64
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    name: Linux aarch64 AppImage
+    runs-on: ubuntu-22.04-arm
+    env:
+      CI_VERSION: ${{ inputs.ci_version || '6.2.7-arm64' }}
+      # GitHub's arm runners may not ship FUSE; let AppImage tools self-extract
+      APPIMAGE_EXTRACT_AND_RUN: 1
+      VULKAN_VERSION: v1.4.313
+
+    steps:
+      - name: Check out Pyrolight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the patched PyroWave API
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: karsyboy/pyrowave
+          ref: 78084ece21b1725d193442a7619660625f3f735a
+          path: deps/PyroWave
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes \
+            qt6-base-dev qt6-declarative-dev libqt6svg6-dev \
+            qml6-module-qtquick-controls qml6-module-qtquick-templates \
+            qml6-module-qtquick-layouts qml6-module-qtqml-workerscript \
+            qml6-module-qtquick-window qml6-module-qtquick python3-pip nasm \
+            libgbm-dev libdrm-dev libfreetype-dev libasound2-dev libdbus-1-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev \
+            libibus-1.0-dev libpulse-dev libudev-dev libx11-dev libxcursor-dev \
+            libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev \
+            libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev libxau-dev \
+            libx11-xcb-dev libxfixes-dev libxtst-dev wayland-protocols libopus-dev \
+            libvdpau-dev libgl-dev libpipewire-0.3-dev liburing-dev cmake \
+            libwayland-dev libdecor-0-dev qt6-wayland \
+            build-essential git pkg-config autoconf automake libtool ninja-build \
+            python3-jinja2 file
+          python3 -m pip install --user meson
+          mkdir -p dep_root/bin deps
+          echo "$(python3 -m site --user-base)/bin" >> "${GITHUB_PATH}"
+          echo "${PWD}/dep_root/bin" >> "${GITHUB_PATH}"
+
+      - name: Build Vulkan headers, loader and glslang
+        working-directory: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${VULKAN_VERSION}" https://github.com/KhronosGroup/Vulkan-Headers.git
+          cmake -S Vulkan-Headers -B Vulkan-Headers/build -DCMAKE_BUILD_TYPE=Release
+          sudo cmake --install Vulkan-Headers/build
+
+          git clone --depth 1 --branch "${VULKAN_VERSION}" https://github.com/KhronosGroup/Vulkan-Loader.git
+          cmake -S Vulkan-Loader -B Vulkan-Loader/build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_WSI_WAYLAND_SUPPORT=OFF -DBUILD_TESTS=OFF
+          cmake --build Vulkan-Loader/build --parallel
+          sudo cmake --install Vulkan-Loader/build
+
+          git clone --depth 1 --branch 14.3.0 https://github.com/KhronosGroup/glslang.git
+          cmake -S glslang -B glslang/build -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=OFF \
+            -DGLSLANG_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/aarch64-linux-gnu
+          cmake --build glslang/build --parallel
+          sudo cmake --install glslang/build
+          sudo ldconfig
+
+      - name: Check out SDL3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: libsdl-org/SDL
+          ref: release-3.4.18
+          path: deps/SDL
+          persist-credentials: false
+
+      - name: Build SDL3
+        working-directory: deps/SDL
+        run: |
+          set -euo pipefail
+          cmake -DSDL_KMSDRM=OFF -DSDL_WAYLAND=ON -DSDL_WAYLAND_LIBDECOR=ON -DSDL_X11=ON -DSDL_TEST_LIBRARY=OFF -DSDL_INSTALL_DOCS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
+          # SDL silently drops video drivers whose dependencies are missing
+          for driver in SDL_VIDEO_DRIVER_WAYLAND SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR SDL_VIDEO_DRIVER_X11; do
+            grep -q "^#define ${driver} " build/include-config-*/build_config/SDL_build_config.h || { echo "SDL3 was configured without ${driver}"; exit 1; }
+          done
+          cmake --build build --parallel
+          sudo cmake --install build
+
+      - name: Check out sdl2-compat
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: libsdl-org/sdl2-compat
+          ref: release-2.32.74
+          path: deps/sdl2-compat
+          persist-credentials: false
+
+      - name: Build sdl2-compat
+        working-directory: deps/sdl2-compat
+        run: |
+          cmake -DSDL2COMPAT_TESTS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -S . -B build
+          cmake --build build --parallel
+          sudo cmake --install build
+
+      - name: Check out SDL_ttf
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: libsdl-org/SDL_ttf
+          ref: a883e490e30fb44a5336ea3dcb990c6982c5216f
+          path: deps/SDL_ttf
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build SDL_ttf
+        working-directory: deps/SDL_ttf
+        run: |
+          ./autogen.sh
+          ./configure
+          make -j"$(nproc)"
+          sudo make install
+
+      - name: Check out libva
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: intel/libva
+          ref: 2.24.1
+          path: deps/libva
+          persist-credentials: false
+
+      - name: Build libva
+        working-directory: deps/libva
+        run: |
+          ./autogen.sh
+          ./configure --enable-x11=yes --enable-glx=no --enable-drm=no --enable-wayland=yes
+          make -j"$(nproc)"
+          sudo make install
+
+      - name: Check out libplacebo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: haasn/libplacebo
+          ref: 92b5ac6db79f4d680eb656692f7bf51e9606f42a
+          path: deps/libplacebo
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build libplacebo
+        working-directory: deps/libplacebo
+        run: |
+          set -euo pipefail
+          git apply ../../app/deploy/linux/appimage/*.patch
+          meson setup build -Dvulkan=enabled -Dopengl=disabled -Ddemos=false -Dglslang=enabled -Dshaderc=disabled
+          ninja -C build
+          # Stage as the runner user (meson lives in its Python site), then copy as root
+          meson install -C build --no-rebuild --destdir "${PWD}/install-root"
+          test -d "${PWD}/install-root/usr/local"
+          sudo cp -a "${PWD}/install-root/usr/local/." /usr/local/
+
+      - name: Build dav1d
+        working-directory: deps
+        env:
+          DAV1D_VERSION: 1.5.4
+        run: |
+          set -euo pipefail
+          git clone --branch "${DAV1D_VERSION}" --depth 1 https://code.videolan.org/videolan/dav1d.git
+          meson setup dav1d/build dav1d -Ddefault_library=static -Dbuildtype=release -Denable_tools=false -Denable_tests=false
+          ninja -C dav1d/build
+          meson install -C dav1d/build --no-rebuild --destdir "${PWD}/dav1d-install-root"
+          test -d "${PWD}/dav1d-install-root/usr/local"
+          sudo cp -a "${PWD}/dav1d-install-root/usr/local/." /usr/local/
+
+      - name: Check out FFmpeg
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: FFmpeg/FFmpeg
+          ref: n9.0.2
+          path: deps/FFmpeg
+          persist-credentials: false
+
+      - name: Build FFmpeg
+        working-directory: deps/FFmpeg
+        run: |
+          ./configure --enable-pic --enable-lto --disable-static --enable-shared --disable-all --disable-autodetect \
+            --enable-avcodec --enable-avformat --enable-swscale \
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=av1 \
+            --enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --enable-hwaccel=av1_vaapi \
+            --enable-vdpau --enable-hwaccel=h264_vdpau --enable-hwaccel=hevc_vdpau --enable-hwaccel=av1_vdpau \
+            --enable-libdrm --enable-vulkan --enable-hwaccel=h264_vulkan --enable-hwaccel=hevc_vulkan --enable-hwaccel=av1_vulkan \
+            --enable-libdav1d --enable-decoder=libdav1d
+          make -j"$(nproc)"
+          sudo make install
+
+      - name: Install linuxdeploy
+        working-directory: dep_root/bin
+        run: |
+          curl --fail --location --remote-name https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-aarch64.AppImage
+          curl --fail --location --remote-name https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-aarch64.AppImage
+          echo '620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff  linuxdeploy-aarch64.AppImage' | sha256sum --check --strict
+          echo 'bf1c24aff6d749b5cf423afad6f15abd4440f81dec1aab95706b25f6667cdcf1  linuxdeploy-plugin-qt-aarch64.AppImage' | sha256sum --check --strict
+          chmod +x linuxdeploy*.AppImage
+
+      - name: Build the PyroWave AppImage
+        env:
+          PYROWAVE_SOURCE: ${{ github.workspace }}/deps/PyroWave
+        run: |
+          sudo ldconfig
+          scripts/build-pyrowave-appimage.sh
+
+      - name: Verify the AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="build/installer-release/Pyrolight-${CI_VERSION}-aarch64.AppImage"
+          test -s "${asset}"
+          chmod +x "${asset}"
+          "${asset}" --appimage-extract >/dev/null
+          file squashfs-root/usr/bin/pyrolight | grep -F 'ARM aarch64'
+          readelf -d squashfs-root/usr/bin/pyrolight | grep -F 'libpyrowave-shared.so.1'
+          find squashfs-root -type f -name 'libpyrowave-shared.so*' -print -quit | grep -F 'libpyrowave-shared.so'
+          test -s squashfs-root/usr/share/licenses/pyrolight/Pyrolight-LICENSE
+          test -s squashfs-root/usr/share/licenses/pyrolight/PyroWave-LICENSE
+          scripts/check-appimage-display-backends.sh squashfs-root
+          scripts/check-linux-icons.sh squashfs-root
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: Pyrolight-${{ env.CI_VERSION }}-linux-aarch64
+          path: build/installer-release/Pyrolight-*-aarch64.AppImage
+          compression-level: 0
+          if-no-files-found: error
