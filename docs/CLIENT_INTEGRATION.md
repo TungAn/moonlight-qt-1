@@ -59,11 +59,29 @@ manager and certificate pins.
 `--settings-revision REV` refuses to launch if saved preferences changed since
 `prepare-launch`. `--integration-events` prints lines prefixed
 `PYROLIGHT_EVENT ` followed by schema-1 JSON. States come from launcher/Session
-signals: connecting, launching, streaming, disconnected and failed. The streaming
+signals: connecting, launching, awaiting_confirmation, transport_ready,
+streaming, disconnected and failed. `transport_ready` comes from
+`connectionStarted`, before SDL window creation. `streaming` comes from
+`streamingWindowReady`, after a shown SDL window has an initialized renderer.
+The settings capability `windowReadiness:true` advertises this distinction.
+Additive `window` events include SDL ID, shown/focus flags, renderer readiness,
+SteamGameId and native X11 ID when available. They are emitted for window/focus
+changes without a per-frame poll. These observations do not establish compositor
+visibility, first-frame presentation, audio output or working controller focus.
+The streaming
 event includes negotiated codec, dimensions, FPS, requested transport bitrate,
 chroma flags and Qt/SDL display backends. These are a connection snapshot, not
 rendered-FPS, packet-loss or latency measurements. Auxiliary `quality` events report Pyrolight’s native good/poor connection signal without changing lifecycle state. Detailed performance remains
 in the decoder overlay.
+
+`--terminate-app-id ID` with `--app-id TARGET` authorizes a single confirmed
+switch. It starts/resumes an idle or already matching target, conditionally
+terminates only the expected different application, and refuses any other
+running app. Integrations must ask the user before setting this option and
+must not replay it on reconnect. Interactive switch dialogs also pin the
+application seen when requesting confirmation. A matching Pyroshine build is
+required to check `expectedAppId` under the host lifecycle lock; server refusal
+is reported as a failure without a forced cancellation fallback.
 
 Integrations preserve games by launching with `--no-quit-after`. Explicit
 `quit HOST --app-id ID --integration-events` checks the current application and

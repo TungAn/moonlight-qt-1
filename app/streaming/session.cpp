@@ -53,6 +53,13 @@
 #include <QQuickOpenGLUtils>
 #endif
 
+#ifdef HAS_X11
+#include <SDL_syswm.h>
+// Xlib's macros collide with Qt enum members and local identifiers.
+#undef None
+#undef Status
+#endif
+
 #define CONN_TEST_SERVER "qt.conntest.moonlight-stream.org"
 
 CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
@@ -1900,6 +1907,23 @@ QJsonObject Session::integrationDiagnostics() const
         {"videoFormat", m_ActiveVideoFormat}, {"displayDriver", QString::fromUtf8(SDL_GetCurrentVideoDriver())}};
 }
 
+QJsonObject Session::integrationWindowState() const
+{
+    const Uint32 flags = m_Window ? SDL_GetWindowFlags(m_Window) : 0;
+    QJsonObject result{{"id", m_Window ? int(SDL_GetWindowID(m_Window)) : 0},
+        {"shown", bool(flags & SDL_WINDOW_SHOWN) && !(flags & SDL_WINDOW_HIDDEN)},
+        {"focused", bool(flags & SDL_WINDOW_INPUT_FOCUS)},
+        {"rendererReady", m_VideoDecoder != nullptr},
+        {"steamGameId", QString::fromUtf8(qgetenv("SteamGameId"))}};
+#ifdef HAS_X11
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (m_Window && SDL_GetWindowWMInfo(m_Window, &info) && info.subsystem == SDL_SYSWM_X11)
+        result["nativeId"] = QString::number(info.info.x11.window);
+#endif
+    return result;
+}
+
 void Session::flushWindowEvents()
 {
     // Pump events to ensure all pending OS events are posted
@@ -2052,6 +2076,7 @@ void Session::exec()
                          "SDL_CreateWindow() failed: %s",
                          SDL_GetError());
 
+            emit displayLaunchError(tr("Unable to create the streaming window: %1").arg(QString::fromUtf8(SDL_GetError())));
             delete m_InputHandler;
             m_InputHandler = nullptr;
             SDL_QuitSubSystem(SDL_INIT_VIDEO);
@@ -2091,6 +2116,19 @@ void Session::exec()
     if (m_IsFullScreen) {
         SDL_SetWindowFullscreen(m_Window, m_FullScreenFlag);
     }
+
+    // These observations come from the actual SDL window, independently of
+    // transport connectionStarted (which precedes window/renderer creation).
+    bool windowReadyReported = false;
+    const auto reportWindow = [&] {
+        emit windowPresentationChanged();
+        const Uint32 flags = SDL_GetWindowFlags(m_Window);
+        if (!windowReadyReported && m_VideoDecoder && (flags & SDL_WINDOW_SHOWN) && !(flags & SDL_WINDOW_HIDDEN)) {
+            windowReadyReported = true;
+            emit streamingWindowReady();
+        }
+    };
+    reportWindow();
 
     bool needsFirstEnterCapture = false;
     bool needsPostDecoderCreationCapture = false;
@@ -2230,6 +2268,11 @@ void Session::exec()
             break;
 
         case SDL_WINDOWEVENT:
+            if (event.window.windowID != SDL_GetWindowID(m_Window)) break;
+            if (event.window.event == SDL_WINDOWEVENT_SHOWN ||
+                event.window.event == SDL_WINDOWEVENT_HIDDEN ||
+                event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED ||
+                event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) reportWindow();
             // Early handling of some events
             switch (event.window.event) {
             case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -2441,6 +2484,7 @@ void Session::exec()
             m_InputHandler->updatePointerRegionLock();
 
             SDL_UnlockMutex(m_DecoderLock);
+            reportWindow();
             break;
 
         case SDL_KEYUP:

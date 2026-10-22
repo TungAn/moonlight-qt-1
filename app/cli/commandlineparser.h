@@ -69,12 +69,14 @@ public:
     QString getHost() const;
     QString getAppName() const;
     int getAppId() const { return m_AppId; }
+    int terminateAppId() const { return m_TerminateAppId; }
     bool integrationEvents() const { return m_IntegrationEvents; }
 
 private:
     QString m_Host;
     QString m_AppName;
     int m_AppId = 0;
+    int m_TerminateAppId = 0;
     bool m_IntegrationEvents = false;
     QMap<QString, StreamingPreferences::WindowMode> m_WindowModeMap;
     QMap<QString, StreamingPreferences::AudioConfig> m_AudioConfigMap;

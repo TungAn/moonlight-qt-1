@@ -363,6 +363,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     // Add other arguments and options
     parser.addPositionalArgument("host", "Host computer name, UUID, or IP address", "<host>");
     parser.addPositionalArgument("app", "App name (optional with --app-id)", "[<app>]");
+    parser.addValueOption("terminate-app-id", "Explicitly confirmed application to terminate before switching (conditional cancel)");
     parser.addValueOption("app-id", "Stable GameStream application ID (takes precedence over name)");
     parser.addValueOption("settings-revision", "Refuse to launch if the saved preference snapshot changed");
     parser.addFlagOption("integration-events", "Print versioned Pyrolight lifecycle JSON events");
@@ -577,6 +578,12 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     }
     if (posArgs.length() < 3 && m_AppId == 0) {
         parser.showError("App not provided");
+    }
+    if (parser.isSet("terminate-app-id")) {
+        bool valid = false;
+        m_TerminateAppId = parser.value("terminate-app-id").toInt(&valid);
+        if (!valid || m_TerminateAppId <= 0 || m_AppId == 0)
+            parser.showError("Terminate app ID must be positive and requires --app-id");
     }
     m_AppName = posArgs.value(2);
     m_IntegrationEvents = parser.isSet("integration-events");

@@ -123,6 +123,7 @@ private slots:
 
     void integrationCapabilitiesAndVrrDependencies()
     {
+        QVERIFY(m_Preferences->integrationSnapshot().value("capabilities").toObject().value("windowReadiness").toBool());
         auto request = QJsonObject{{"schema", 1}, {"operation", "patch"},
             {"revision", m_Preferences->integrationSnapshot().value("revision")},
             {"values", QJsonObject{{"enableVrr", true}, {"enableVsync", false}}}};

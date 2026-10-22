@@ -239,6 +239,7 @@ HEADERS += \
     cli/listapps.h \
     cli/quitstream.h \
     cli/startstream.h \
+    cli/streamswitchpolicy.h \
     cli/settingsapi.h \
     settings/streamingpreferences.h \
     settings/bitratecalculator.h \

@@ -100,6 +100,13 @@ macOS.
 To force X11/XWayland, run with `QT_QPA_PLATFORM=xcb`; to force Wayland, use
 `QT_QPA_PLATFORM=wayland`.
 
+With `--integration-events`, `transport_ready` precedes SDL creation. Window
+observations and `streaming` report SDL shown/focus and initialized-renderer
+state separately, including a native X11 ID and inherited SteamGameId where
+available. Integrations can correlate these with compositor focus without
+forcing XWayland or claiming transport readiness proves visible video. See
+[Local client integration](CLIENT_INTEGRATION.md).
+
 ## Known limitations
 
 - The AppImage ships Qt 6.2. Its Wayland plugin has no fractional-scale

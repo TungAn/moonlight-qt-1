@@ -1081,7 +1081,7 @@ int main(int argc, char *argv[])
             streamParser.parse(app.arguments(), preferences);
             QString host    = streamParser.getHost();
             QString appName = streamParser.getAppName();
-            auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app, streamParser.getAppId());
+            auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app, streamParser.getAppId(), streamParser.terminateAppId());
             if (streamParser.integrationEvents()) {
                 auto event = [](const QString& state, const QString& error = QString()) {
                     const QJsonObject value{{"schema", 1}, {"state", state}, {"error", error}};
@@ -1090,14 +1090,24 @@ int main(int argc, char *argv[])
                 };
                 QObject::connect(launcher, &CliStartStream::Launcher::searchingComputer, &app, [event] { event("connecting"); });
                 QObject::connect(launcher, &CliStartStream::Launcher::searchingApp, &app, [event] { event("launching"); });
+                QObject::connect(launcher, &CliStartStream::Launcher::appQuitRequired, &app, [event] { event("awaiting_confirmation"); });
                 QObject::connect(launcher, &CliStartStream::Launcher::failed, &app, [event](const QString& error) { event("failed", error); });
                 QObject::connect(launcher, &CliStartStream::Launcher::sessionCreated, &app, [event, &app](const QString&, Session* session) {
-                    QObject::connect(session, &Session::connectionStarted, session, [session] {
+                    event("launching");
+                    QObject::connect(session, &Session::connectionStarted, session, [event] { event("transport_ready"); });
+                    QObject::connect(session, &Session::streamingWindowReady, session, [session] {
                         QJsonObject value{{"schema", 1}, {"state", "streaming"}, {"diagnostics", session->integrationDiagnostics()}};
                         value["displayBackend"] = QGuiApplication::platformName();
+                        value["window"] = session->integrationWindowState();
                         fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(value).toJson(QJsonDocument::Compact).constData());
                         fflush(stdout);
                     });
+                    QObject::connect(session, &Session::windowPresentationChanged, session, [session] {
+                        const QJsonObject value{{"schema", 1}, {"state", "window"},
+                            {"window", session->integrationWindowState()}};
+                        fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(value).toJson(QJsonDocument::Compact).constData());
+                        fflush(stdout);
+                    }, Qt::DirectConnection);
                     QObject::connect(session, &Session::sessionFinished, &app, [event](int) { event("disconnected"); });
                     QObject::connect(session, &Session::connectionQualityChanged, session, [](int status) {
                         const QJsonObject value{{"schema", 1}, {"state", "quality"},

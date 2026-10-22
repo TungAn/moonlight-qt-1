@@ -1124,7 +1124,7 @@ QJsonObject StreamingPreferences::integrationSnapshot() const
     return {{"schema", 1}, {"ok", true}, {"revision", revision}, {"activeProfileId", m_ActiveProfileId},
             {"activeProfileName", m_ActiveProfileName}, {"profiles", profiles}, {"values", values},
             {"registry", registry}, {"capabilities", QJsonObject{{"pyrowave", isPyroWaveAvailable()},
-                {"displayProbe", "requires streaming display"}, {"liveUpdates", false}}}};
+                {"displayProbe", "requires streaming display"}, {"liveUpdates", false}, {"windowReadiness", true}}}};
 }
 
 QJsonObject StreamingPreferences::integrationRequest(const QJsonObject& request)
