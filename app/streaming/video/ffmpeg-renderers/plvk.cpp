@@ -55,6 +55,15 @@ public:
     DrmMasterLocker& operator=(DrmMasterLocker&&) noexcept = delete;
 };
 
+// The Gamescope WSI layer is active inside Gamescope unless the user
+// explicitly turned it off, so only an explicit 0 rules it out here.
+static bool mayUseGamescopeWsi()
+{
+    const bool gamescope = qEnvironmentVariableIsSet("GAMESCOPE_WAYLAND_DISPLAY") ||
+                           qgetenv("XDG_CURRENT_DESKTOP").toLower().contains("gamescope");
+    return gamescope && qgetenv("ENABLE_GAMESCOPE_WSI") != "0";
+}
+
 #if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 26, 100)
 static const char *k_OptionalDeviceExtensions[] = {
     /* Misc or required by other extensions */
@@ -346,14 +355,22 @@ bool PlVkRenderer::tryInitializeDevice(VkPhysicalDevice device, VkPhysicalDevice
 #endif
     }
 
-    if (!isSurfacePresentationSupportedByPhysicalDevice(device)) {
+    // A surfaceless probe has no window to test presentation or HDR10 output
+    // against. The stream window repeats both checks when its renderer is created.
+    if (m_SurfacelessProbe) {
+        if (hdrOutputRequired) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Vulkan device '%s': HDR10 output is checked on the stream window, not in the probe",
+                        deviceProps->deviceName);
+        }
+    }
+    else if (!isSurfacePresentationSupportedByPhysicalDevice(device)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Vulkan device '%s' does not support presenting on window surface",
                     deviceProps->deviceName);
         return false;
     }
-
-    if (hdrOutputRequired && !isColorSpaceSupportedByPhysicalDevice(device, VK_COLOR_SPACE_HDR10_ST2084_EXT)) {
+    else if (hdrOutputRequired && !isColorSpaceSupportedByPhysicalDevice(device, VK_COLOR_SPACE_HDR10_ST2084_EXT)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "Vulkan device '%s' does not support HDR10 (ST.2084 PQ)",
                     deviceProps->deviceName);
@@ -502,7 +519,16 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
     POPULATE_FUNCTION(vkGetPhysicalDeviceSurfaceSupportKHR);
     POPULATE_FUNCTION(vkEnumerateDeviceExtensionProperties);
 
-    {
+    // Gamescope's WSI layer crashes creating a surface for the decoder probe's
+    // hidden test window, which is never mapped. The probe only needs the
+    // device, decoder and frame mapping, so under Gamescope it skips the window
+    // surface and swapchain.
+    m_SurfacelessProbe = params->testOnly && mayUseGamescopeWsi();
+    if (m_SurfacelessProbe) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Vulkan probe under Gamescope WSI: testing devices without a window surface");
+    }
+    else {
         // Don't let Qt take DRM master from us during SDL_Vulkan_CreateSurface()
         DrmMasterLocker locker;
 
@@ -533,7 +559,10 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
         return false;
     }
 
-    if (params->vrr.enabled && params->enableVsync && !params->testOnly) {
+    if (m_SurfacelessProbe) {
+        // No surface to present on, so there is no present mode to choose
+    }
+    else if (params->vrr.enabled && params->enableVsync && !params->testOnly) {
         // FIFO would hold every present for the next fixed refresh; VRR needs
         // a mode that flips when the frame is submitted.
         m_VrrEnabled = chooseVrrPresentMode();
@@ -580,7 +609,7 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
     }
 
     // Start with a swapchain that is double-buffered for lowest display latency
-    if (!createSwapchain(1)) {
+    if (!m_SurfacelessProbe && !createSwapchain(1)) {
         return false;
     }
 
