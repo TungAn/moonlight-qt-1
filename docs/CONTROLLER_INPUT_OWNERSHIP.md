@@ -22,7 +22,10 @@ controller input, including when Steam Input is disabled.
   buttons, axes, motion, touch, shortcuts and emulated mouse input. Suspension
   sends neutral state without changing attached slots/masks. Mouse timers only
   post SDL events; transmission stays on the session thread. Axis batching
-  preserves queue ordering across ownership events.
+  preserves queue ordering across ownership events. Keyboard events are not
+  gated: X delivers them only while Gamescope routes keyboard focus to the
+  stream window, which is how Steam's on-screen keyboard types into the game
+  while Steam is the focused app.
 - `gui/sdlgamepadkeynavigation.*` uses the same observer for host/app/settings
   navigation, including Linux menus where Qt owns video and SDL video is not
   initialized. Its existing 50 ms timer continues controller bookkeeping while

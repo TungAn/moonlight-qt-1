@@ -99,7 +99,9 @@ public:
             assert(keysRaised > previousKeyReleases);
             SDL_Event mappedInput = {};
             mappedInput.type = SDL_KEYDOWN;
-            assert(input.handleInputOwnershipEvent(mappedInput));
+            assert(!input.handleInputOwnershipEvent(mappedInput)); // Steam's on-screen keyboard
+            mappedInput.type = SDL_KEYUP;
+            assert(!input.handleInputOwnershipEvent(mappedInput));
             mappedInput.type = SDL_MOUSEBUTTONDOWN;
             assert(input.handleInputOwnershipEvent(mappedInput));
             mappedInput.type = SDL_USEREVENT;

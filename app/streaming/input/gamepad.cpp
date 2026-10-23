@@ -1276,9 +1276,10 @@ bool SdlInputHandler::handleInputOwnershipEvent(const SDL_Event& event)
         return true;
     }
     if (m_GamescopeSnapshot & (GamescopeInputFocus::Known | GamescopeInputFocus::Pending)) {
+        // Keyboard events stay ungated: X only delivers them while Gamescope
+        // routes keyboard focus to this window, and Steam's on-screen keyboard
+        // types into the game while Steam itself is the focused app.
         switch (event.type) {
-        case SDL_KEYDOWN:
-        case SDL_KEYUP:
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
         case SDL_MOUSEMOTION:
