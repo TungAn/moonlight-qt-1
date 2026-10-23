@@ -265,6 +265,8 @@ private:
     int m_VrrFallbackReason;
     SupportedVideoFormatList m_SupportedVideoFormats; // Sorted in order of descending priority
     STREAM_CONFIGURATION m_StreamConfig;
+    // Frame rate sent to the host: m_StreamConfig.fps, or millihertz for a fractional rate
+    int m_HostFrameRate;
     DECODER_RENDERER_CALLBACKS m_VideoCallbacks;
     AUDIO_RENDERER_CALLBACKS m_AudioCallbacks;
     NvComputer* m_Computer;
