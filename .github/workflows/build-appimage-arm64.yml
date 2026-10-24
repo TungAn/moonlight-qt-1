@@ -38,6 +38,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      # Local fixes to moonlight-common-c, kept here instead of in a fork of it
+      - name: Apply moonlight-common-c patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          for patch in patches/moonlight-common-c/*.patch; do
+            git -C moonlight-common-c/moonlight-common-c apply --verbose "$GITHUB_WORKSPACE/$patch"
+          done
+
       - name: Check out the patched PyroWave API
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
