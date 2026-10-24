@@ -42,7 +42,11 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_RightButtonReleaseTimer(0),
       m_DragTimer(0),
       m_DragButton(0),
-      m_NumFingersDown(0)
+      m_NumFingersDown(0),
+      m_PcKeyboard(std::make_unique<PcKeyboard>([this](SDL_Scancode scancode, bool down, Uint16 mod) {
+          sendPcKeyboardKey(scancode, down, mod);
+      })),
+      m_LoggedFirstTouch(false)
 {
     if (m_InputDiagnostics) {
         SDL_LogSetPriority(SDL_LOG_CATEGORY_INPUT, SDL_LOG_PRIORITY_INFO);
@@ -247,6 +251,8 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
 
 SdlInputHandler::~SdlInputHandler()
 {
+    // Let go of anything still held on the on-screen keyboard
+    m_PcKeyboard.reset();
     stopControllerInput();
     m_GamescopeFocus.reset();
     SDL_RemoveTimer(m_GamepadMouseTimer);
@@ -471,10 +477,43 @@ void SdlInputHandler::handleTouchFingerEvent(SDL_TouchFingerEvent* event)
     return;
 #endif
 
+    if (!m_LoggedFirstTouch) {
+        m_LoggedFirstTouch = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Touchscreen input received (%s touch mode)",
+                    m_AbsoluteTouchMode ? "absolute" : "trackpad");
+    }
+
+    // The on-screen PC keyboard takes the touches that land on it, and a three finger tap
+    // anywhere else shows or hides it
+    int windowWidth = 0, windowHeight = 0;
+    if (m_Window != nullptr) {
+        SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
+    }
+    bool usedByKeyboard = m_PcKeyboard->handleTouch(event, windowHeight > 0 ? (float)windowWidth / windowHeight : 0);
+    if (m_PcKeyboard->observeToggleGesture(event, usedByKeyboard)) {
+        m_PcKeyboard->toggle();
+    }
+    if (usedByKeyboard) {
+        return;
+    }
+
     if (m_AbsoluteTouchMode) {
         handleAbsoluteFingerEvent(event);
     }
     else {
         handleRelativeFingerEvent(event);
     }
+}
+
+void SdlInputHandler::sendPcKeyboardKey(SDL_Scancode scancode, bool down, Uint16 mod)
+{
+    SDL_KeyboardEvent event = {};
+    event.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    event.timestamp = SDL_GetTicks();
+    event.windowID = m_Window != nullptr ? SDL_GetWindowID(m_Window) : 0;
+    event.state = down ? SDL_PRESSED : SDL_RELEASED;
+    event.keysym.scancode = scancode;
+    event.keysym.sym = SDL_GetKeyFromScancode(scancode);
+    event.keysym.mod = mod;
+    handleKeyEvent(&event);
 }

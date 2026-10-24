@@ -1078,15 +1078,16 @@ bool PlVkRenderer::applyColorspaceHint(const pl_color_space& color)
 void PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
 {
     // Reserve enough space to avoid allocating under the overlay lock
-    pl_overlay_part overlayParts[Overlay::OverlayMax] = {};
-    pl_tex texturesToDestroy[2 * Overlay::OverlayMax] = {};
+    constexpr int slotCount = (int)SDL_arraysize(m_Overlays);
+    pl_overlay_part overlayParts[slotCount] = {};
+    pl_tex texturesToDestroy[2 * slotCount] = {};
     int texturesToDestroyCount = 0;
-    pl_overlay overlays[Overlay::OverlayMax] = {};
+    pl_overlay overlays[slotCount] = {};
     int overlayCount = 0;
 
     // We perform minimal processing under the overlay lock to avoid blocking threads updating the overlay
     SDL_AtomicLock(&m_OverlayLock);
-    for (int i = 0; i < Overlay::OverlayMax; i++) {
+    for (int i = 0; i < slotCount; i++) {
         // If we have a staging overlay, we need to transfer ownership to us
         if (m_Overlays[i].hasStagingOverlay) {
             if (m_Overlays[i].hasOverlay) {
@@ -1103,7 +1104,10 @@ void PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
         }
 
         // If we have an overlay but it's been disabled, free the overlay texture
-        if (m_Overlays[i].hasOverlay && !Session::get()->getOverlayManager().isOverlayEnabled((Overlay::OverlayType)i)) {
+        Overlay::OverlayManager& overlayManager = Session::get()->getOverlayManager();
+        bool enabled = i == k_KeyboardOverlaySlot ? overlayManager.isKeyboardVisible()
+                                                  : overlayManager.isOverlayEnabled((Overlay::OverlayType)i);
+        if (m_Overlays[i].hasOverlay && !enabled) {
             texturesToDestroy[texturesToDestroyCount++] = m_Overlays[i].overlay.tex;
             SDL_zero(m_Overlays[i].overlay);
             m_Overlays[i].hasOverlay = false;
@@ -1123,8 +1127,20 @@ void PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
                 overlayParts[i].dst.x0 = 0;
                 overlayParts[i].dst.y0 = 0;
             }
-            overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
-            overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;
+
+            if (i == k_KeyboardOverlaySlot) {
+                // Along the bottom, scaled to the full width (the keyboard maps touches the same way)
+                float width = targetFrame.crop.x1 - targetFrame.crop.x0;
+                float height = width * overlayParts[i].src.y1 / overlayParts[i].src.x1;
+                overlayParts[i].dst.x0 = targetFrame.crop.x0;
+                overlayParts[i].dst.x1 = targetFrame.crop.x1;
+                overlayParts[i].dst.y1 = targetFrame.crop.y1;
+                overlayParts[i].dst.y0 = targetFrame.crop.y1 - height;
+            }
+            else {
+                overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
+                overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;
+            }
 
             m_Overlays[i].overlay.parts = &overlayParts[i];
             m_Overlays[i].overlay.num_parts = 1;
@@ -1620,8 +1636,21 @@ bool PlVkRenderer::createOverlay(pl_overlay* overlay, SDL_Surface* surface)
 
 void PlVkRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
 {
-    SDL_Surface* newSurface = Session::get()->getOverlayManager().getUpdatedOverlaySurface(type);
-    if (newSurface == nullptr && Session::get()->getOverlayManager().isOverlayEnabled(type)) {
+    stageOverlaySurface(type,
+                        Session::get()->getOverlayManager().getUpdatedOverlaySurface(type),
+                        Session::get()->getOverlayManager().isOverlayEnabled(type));
+}
+
+void PlVkRenderer::notifyKeyboardOverlayUpdated()
+{
+    stageOverlaySurface(k_KeyboardOverlaySlot,
+                        Session::get()->getOverlayManager().getUpdatedKeyboardSurface(),
+                        Session::get()->getOverlayManager().isKeyboardVisible());
+}
+
+void PlVkRenderer::stageOverlaySurface(int slot, SDL_Surface* newSurface, bool enabled)
+{
+    if (newSurface == nullptr && enabled) {
         // The overlay is enabled and there is no new surface. Leave the old texture alone.
         return;
     }
@@ -1630,27 +1659,27 @@ void PlVkRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
     // We want to clear the staging overlay flag even if a staging overlay is still present,
     // since this ensures the render thread will not read from a partially initialized pl_tex
     // as we modify or recreate the staging overlay texture outside the overlay lock.
-    m_Overlays[type].hasStagingOverlay = false;
+    m_Overlays[slot].hasStagingOverlay = false;
     SDL_AtomicUnlock(&m_OverlayLock);
 
     // If there's no new staging overlay, free the old staging overlay texture.
     // NB: This is safe to do outside the overlay lock because we're guaranteed
     // to not have racing readers/writers if hasStagingOverlay is false.
     if (newSurface == nullptr) {
-        pl_tex_destroy(m_Vulkan->gpu, &m_Overlays[type].stagingOverlay.tex);
-        SDL_zero(m_Overlays[type].stagingOverlay);
+        pl_tex_destroy(m_Vulkan->gpu, &m_Overlays[slot].stagingOverlay.tex);
+        SDL_zero(m_Overlays[slot].stagingOverlay);
         return;
     }
 
     // newSurface is now owned by the texture upload process
-    if (!createOverlay(&m_Overlays[type].stagingOverlay, newSurface)) {
+    if (!createOverlay(&m_Overlays[slot].stagingOverlay, newSurface)) {
         return;
     }
 
     // Make this staging overlay visible to the render thread
     SDL_AtomicLock(&m_OverlayLock);
-    SDL_assert(!m_Overlays[type].hasStagingOverlay);
-    m_Overlays[type].hasStagingOverlay = true;
+    SDL_assert(!m_Overlays[slot].hasStagingOverlay);
+    m_Overlays[slot].hasStagingOverlay = true;
     SDL_AtomicUnlock(&m_OverlayLock);
 }
 

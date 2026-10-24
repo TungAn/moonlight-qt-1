@@ -195,6 +195,7 @@ SOURCES += \
     streaming/input/input.cpp \
     streaming/input/keyboard.cpp \
     streaming/input/mouse.cpp \
+    streaming/input/pckeyboard.cpp \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
     streaming/audio/audio.cpp \
@@ -243,6 +244,7 @@ HEADERS += \
     streaming/input/input.h \
     streaming/input/controllerinputstate.h \
     streaming/input/gamescopeinputfocus.h \
+    streaming/input/pckeyboard.h \
     streaming/input/gamepadidentity.h \
     streaming/input/gamepadfeedback.h \
     streaming/session.h \

@@ -4,10 +4,12 @@
 using namespace Overlay;
 
 OverlayManager::OverlayManager() :
+    m_KeyboardSurface(nullptr),
     m_Renderer(nullptr),
     m_FontData(Path::readDataFile("ModeSeven.ttf"))
 {
     memset(m_Overlays, 0, sizeof(m_Overlays));
+    SDL_AtomicSet(&m_KeyboardVisible, 0);
 
     m_Overlays[OverlayType::OverlayDebug].color = {0xD0, 0xD0, 0x00, 0xFF};
     m_Overlays[OverlayType::OverlayDebug].fontSize = 20;
@@ -38,6 +40,7 @@ OverlayManager::~OverlayManager()
             TTF_CloseFont(m_Overlays[i].font);
         }
     }
+    SDL_FreeSurface((SDL_Surface*)SDL_AtomicSetPtr((void**)&m_KeyboardSurface, nullptr));
 
     TTF_Quit();
 
@@ -114,6 +117,25 @@ SDL_Color OverlayManager::getOverlayColor(OverlayType type)
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
     m_Renderer = renderer;
+}
+
+void OverlayManager::setKeyboardSurface(SDL_Surface* surface)
+{
+    SDL_AtomicSet(&m_KeyboardVisible, surface != nullptr);
+    SDL_FreeSurface((SDL_Surface*)SDL_AtomicSetPtr((void**)&m_KeyboardSurface, surface));
+    if (m_Renderer != nullptr) {
+        m_Renderer->notifyKeyboardOverlayUpdated();
+    }
+}
+
+bool OverlayManager::isKeyboardVisible()
+{
+    return SDL_AtomicGet(&m_KeyboardVisible) != 0;
+}
+
+SDL_Surface* OverlayManager::getUpdatedKeyboardSurface()
+{
+    return (SDL_Surface*)SDL_AtomicSetPtr((void**)&m_KeyboardSurface, nullptr);
 }
 
 void OverlayManager::notifyOverlayUpdated(OverlayType type)

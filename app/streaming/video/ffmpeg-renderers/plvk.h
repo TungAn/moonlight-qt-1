@@ -47,6 +47,7 @@ public:
     virtual void waitToRender() override;
     virtual void cleanupRenderContext() override;
     virtual void notifyOverlayUpdated(Overlay::OverlayType) override;
+    virtual void notifyKeyboardOverlayUpdated() override;
     virtual bool notifyWindowChanged(PWINDOW_STATE_CHANGE_INFO) override;
     virtual int getRendererAttributes() override;
     virtual int getDecoderColorspace() override;
@@ -201,7 +202,12 @@ private:
         // as long as hasStagingOverlay is false.
         bool hasStagingOverlay;
         pl_overlay stagingOverlay;
-    } m_Overlays[Overlay::OverlayMax] = {};
+    } m_Overlays[Overlay::OverlayMax + 1] = {};
+
+    // The on-screen PC keyboard uses the slot after the text overlays
+    static constexpr int k_KeyboardOverlaySlot = Overlay::OverlayMax;
+
+    void stageOverlaySurface(int slot, SDL_Surface* newSurface, bool enabled);
 
     // Device context used for hwaccel decoders
     AVBufferRef* m_HwDeviceCtx = nullptr;

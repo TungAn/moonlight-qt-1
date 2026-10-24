@@ -6,6 +6,7 @@
 #include "SDL_compat.h"
 #include "controllerinputstate.h"
 #include "gamescopeinputfocus.h"
+#include "pckeyboard.h"
 
 struct GamepadState {
     SDL_GameController* controller;
@@ -282,5 +283,11 @@ private:
     SDL_TimerID m_DragTimer;
     char m_DragButton;
     int m_NumFingersDown;
+
+    // Sends a key from the on-screen PC keyboard as if typed on a physical keyboard
+    void sendPcKeyboardKey(SDL_Scancode scancode, bool down, Uint16 mod);
+
+    std::unique_ptr<PcKeyboard> m_PcKeyboard;
+    bool m_LoggedFirstTouch;
 
 };
