@@ -161,6 +161,7 @@ GlobalCommandLineParser::ParseResult GlobalCommandLineParser::parse(const QStrin
         "  quit            Quit the currently running app\n"
         "  stream          Start streaming an app\n"
         "  pair            Pair a new host\n"
+        "  settings        Read or transact Pyrolight settings as JSON\n"
         "\n"
         "See 'pyrolight <action> --help' for help of specific action."
     );
@@ -216,6 +217,8 @@ void QuitCommandLineParser::parse(const QStringList &args)
         "Quit the currently running app on the given host."
     );
     parser.addPositionalArgument("quit", "quit running app");
+    parser.addValueOption("app-id", "Refuse to quit unless this application ID is running");
+    parser.addFlagOption("integration-events", "Print versioned Pyrolight lifecycle JSON events");
     parser.addPositionalArgument("host", "Host computer name, UUID, or IP address", "<host>");
 
     if (!parser.parse(args)) {
@@ -234,6 +237,12 @@ void QuitCommandLineParser::parse(const QStringList &args)
         parser.showError("Host not provided");
     }
     m_Host = parser.positionalArguments().at(1);
+    if (parser.isSet("app-id")) {
+        bool valid = false;
+        m_AppId = parser.value("app-id").toInt(&valid);
+        if (!valid || m_AppId <= 0) parser.showError("App ID must be a positive integer");
+    }
+    m_IntegrationEvents = parser.isSet("integration-events");
 }
 
 QString QuitCommandLineParser::getHost() const
@@ -353,7 +362,11 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
 
     // Add other arguments and options
     parser.addPositionalArgument("host", "Host computer name, UUID, or IP address", "<host>");
-    parser.addPositionalArgument("app", "App to stream", "\"<app>\"");
+    parser.addPositionalArgument("app", "App name (optional with --app-id)", "[<app>]");
+    parser.addValueOption("terminate-app-id", "Explicitly confirmed application to terminate before switching (conditional cancel)");
+    parser.addValueOption("app-id", "Stable GameStream application ID (takes precedence over name)");
+    parser.addValueOption("settings-revision", "Refuse to launch if the saved preference snapshot changed");
+    parser.addFlagOption("integration-events", "Print versioned Pyrolight lifecycle JSON events");
 
     parser.addFlagOption("720",  "1280x720 resolution");
     parser.addFlagOption("1080", "1920x1080 resolution");
@@ -396,7 +409,15 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
 
     parser.handleUnknownOptions();
 
+    // Help and capability probes must not inspect or change streaming settings.
+    parser.handleHelpAndVersionOptions();
+    if (preferences == nullptr) {
+        parser.showError("Expected --help or --version");
+    }
+
     // Resolve display's width and height
+    if (parser.isSet("settings-revision") && parser.value("settings-revision") != preferences->integrationSnapshot().value("revision").toString())
+        parser.showError("Pyrolight settings changed before launch; retry with the current profile");
     static QRegularExpression resolutionRexExp("^(720|1080|1440|4K|resolution)$");
     QStringList resoOptions = parser.optionNames().filter(resolutionRexExp);
     bool displaySet = !resoOptions.isEmpty();
@@ -550,10 +571,22 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     }
     m_Host = parser.positionalArguments().at(1);
 
-    if (posArgs.length() < 3) {
+    if (parser.isSet("app-id")) {
+        bool valid = false;
+        m_AppId = parser.value("app-id").toInt(&valid);
+        if (!valid || m_AppId <= 0) parser.showError("App ID must be a positive integer");
+    }
+    if (posArgs.length() < 3 && m_AppId == 0) {
         parser.showError("App not provided");
     }
-    m_AppName = parser.positionalArguments().at(2);
+    if (parser.isSet("terminate-app-id")) {
+        bool valid = false;
+        m_TerminateAppId = parser.value("terminate-app-id").toInt(&valid);
+        if (!valid || m_TerminateAppId <= 0 || m_AppId == 0)
+            parser.showError("Terminate app ID must be positive and requires --app-id");
+    }
+    m_AppName = posArgs.value(2);
+    m_IntegrationEvents = parser.isSet("integration-events");
 }
 
 QString StreamCommandLineParser::getHost() const
@@ -587,6 +620,8 @@ void ListCommandLineParser::parse(const QStringList &args)
 
     parser.addFlagOption("csv",     "Print as CSV with additional information");
     parser.addFlagOption("json",    "Print as JSON with additional information, including host-reported launcher identities");
+    parser.addValueOption("artwork-id", "Return artwork for an advertised app ID in JSON");
+    parser.addChoiceOption("network-action", "Run an explicit network tool", {"check", "calibrate", "fix"});
     parser.addFlagOption("verbose", "Displays additional information");
 
     if (!parser.parse(args)) {
@@ -598,6 +633,15 @@ void ListCommandLineParser::parse(const QStringList &args)
 
     m_PrintCSV = parser.isSet("csv");
     m_PrintJSON = parser.isSet("json");
+    if (parser.isSet("network-action")) {
+        m_NetworkAction = parser.getChoiceOptionValue("network-action");
+        if (!m_PrintJSON || parser.isSet("artwork-id")) parser.showError("Network tools require --json and cannot request artwork");
+    }
+    if (parser.isSet("artwork-id")) {
+        bool valid = false;
+        m_ArtworkId = parser.value("artwork-id").toInt(&valid);
+        if (!valid || m_ArtworkId <= 0 || !m_PrintJSON) parser.showError("--artwork-id requires --json and a positive app ID");
+    }
     if (m_PrintCSV && m_PrintJSON) {
         parser.showError("--csv and --json cannot be combined");
     }

@@ -22,7 +22,7 @@ class Launcher : public QObject
 public:
     explicit Launcher(QString computer, QString app,
                       StreamingPreferences* preferences,
-                      QObject *parent = nullptr);
+                      QObject *parent = nullptr, int appId = 0, int terminateAppId = 0);
     ~Launcher();
     Q_INVOKABLE void execute(ComputerManager *manager);
     Q_INVOKABLE void quitRunningApp();

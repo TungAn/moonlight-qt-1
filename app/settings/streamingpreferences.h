@@ -5,6 +5,7 @@
 #include <QQmlEngine>
 #include <QStringList>
 #include <QVariantMap>
+#include <QJsonObject>
 
 #include "vrrtimingoptions.h"
 
@@ -45,6 +46,9 @@ public:
     Q_INVOKABLE bool activateProfile(const QString& profileId);
 
     void reload();
+    // Versioned local integration contract; all writes use the same profile model as QML.
+    QJsonObject integrationSnapshot() const;
+    QJsonObject integrationRequest(const QJsonObject& request);
 
     enum AudioConfig
     {
@@ -163,6 +167,7 @@ public:
     Q_PROPERTY(int height MEMBER height NOTIFY displayModeChanged)
     Q_PROPERTY(int fps MEMBER fps NOTIFY displayModeChanged)
     Q_PROPERTY(int bitrateKbps MEMBER bitrateKbps NOTIFY bitrateChanged)
+    Q_PROPERTY(int packetSize MEMBER packetSize NOTIFY packetSizeChanged)
     Q_PROPERTY(bool unlockBitrate MEMBER unlockBitrate NOTIFY unlockBitrateChanged)
     Q_PROPERTY(bool autoAdjustBitrate MEMBER autoAdjustBitrate NOTIFY autoAdjustBitrateChanged)
     Q_PROPERTY(bool enableVsync MEMBER enableVsync NOTIFY enableVsyncChanged)
@@ -286,6 +291,7 @@ public:
 signals:
     void displayModeChanged();
     void bitrateChanged();
+    void packetSizeChanged();
     void unlockBitrateChanged();
     void autoAdjustBitrateChanged();
     void enableVsyncChanged();

@@ -3,11 +3,15 @@
 #include "backend/boxartmanager.h"
 #include "backend/computermanager.h"
 #include "backend/computerseeker.h"
+#include "backend/networkbuffers.h"
+#include "backend/pyrowavecalibrator.h"
+#include "settings/streamingpreferences.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QBuffer>
 
 #define COMPUTER_SEEK_TIMEOUT 30000
 
@@ -86,6 +90,10 @@ public:
                 if (event.computer->pairState == NvComputer::PS_PAIRED) {
                     m_State = StateListApps;
                     m_Computer = event.computer;
+                    if (!m_Arguments.networkAction().isEmpty()) {
+                        runNetworkTool();
+                        break;
+                    }
 
                     if (m_Arguments.isVerbose()) {
                         fprintf(stdout, "Loading app list...\n");
@@ -99,7 +107,21 @@ public:
                         NvHTTP http{m_Computer};
 
                         const auto appList = http.getAppList();
-                        if (m_Arguments.isPrintJSON()) {
+                        if (m_Arguments.artworkId() != 0) {
+                            const int id = m_Arguments.artworkId();
+                            bool advertised = false;
+                            for (const auto& candidate : appList) if (candidate.id == id) advertised = true;
+                            if (!advertised) throw std::runtime_error("Application is no longer advertised");
+                            const QImage image = http.getBoxArt(id).scaled(300, 450, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                            QByteArray bytes;
+                            QBuffer buffer(&bytes);
+                            buffer.open(QIODevice::WriteOnly);
+                            const bool hasImage = !image.isNull() && image.save(&buffer, "PNG");
+                            const QJsonObject result{{"schema", 1}, {"hostUuid", m_Computer->uuid}, {"appId", id},
+                                {"image", hasImage ? "data:image/png;base64," + QString::fromLatin1(bytes.toBase64()) : QString()}};
+                            fprintf(stdout, "%s\n", QJsonDocument(result).toJson(QJsonDocument::Compact).constData());
+                        }
+                        else if (m_Arguments.isPrintJSON()) {
                             printAppsJSON(appList);
                         }
                         else if (m_Arguments.isPrintCSV()) {
@@ -125,6 +147,43 @@ public:
             }
             break;
         }
+    }
+
+    void runNetworkTool()
+    {
+        Q_Q(Launcher);
+        const QString action = m_Arguments.networkAction();
+        auto output = [this, action](QJsonObject result) {
+            result["schema"] = 1;
+            result["hostUuid"] = m_Computer->uuid;
+            result["action"] = action;
+            fprintf(stdout, "%s\n", QJsonDocument(result).toJson(QJsonDocument::Compact).constData());
+            QCoreApplication::exit(0);
+        };
+        if (action == "calibrate") {
+            auto calibrator = new PyroWaveCalibrator(q);
+            q->connect(calibrator, &PyroWaveCalibrator::changed, q, [calibrator, output] {
+                if (!calibrator->running()) output({{"ok", calibrator->ceilingKbps() > 0},
+                    {"message", calibrator->message()}, {"ceilingKbps", calibrator->ceilingKbps()}});
+            });
+            calibrator->start(m_ComputerManager, m_Computer->uuid);
+            return;
+        }
+        auto buffers = new NetworkBuffers(q);
+        buffers->setPacketSize(StreamingPreferences::get()->packetSize);
+        buffers->setHost(m_Computer->activeAddress.address());
+        auto snapshot = [buffers]() -> QJsonObject {
+            return {{"ok", true}, {"needsFix", buffers->needsFix()}, {"canApply", buffers->canApply()},
+                {"currentKb", buffers->currentKb()}, {"recommendedMb", buffers->recommendedMb()},
+                {"problem", buffers->problemText()}, {"fixDescription", buffers->fixDescription()},
+                {"manualCommand", buffers->manualCommand()}, {"message", buffers->message()}};
+        };
+        if (action == "check") { output(snapshot()); return; }
+        q->connect(buffers, &NetworkBuffers::changed, q, [buffers, output, snapshot] {
+            if (!buffers->busy()) output(snapshot());
+        });
+        buffers->apply();
+        if (!buffers->busy()) output(snapshot());
     }
 
     void printApps(QVector<NvApp> apps) {

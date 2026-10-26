@@ -13,6 +13,9 @@
 #include <QElapsedTimer>
 #include <QTemporaryFile>
 #include <QRegularExpression>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTimer>
 
 #ifdef Q_OS_UNIX
 #include <sys/socket.h>
@@ -42,6 +45,7 @@
 #include "cli/listapps.h"
 #include "cli/quitstream.h"
 #include "cli/startstream.h"
+#include "cli/settingsapi.h"
 #include "cli/pair.h"
 #include "cli/commandlineparser.h"
 #include "path.h"
@@ -447,6 +451,62 @@ int main(int argc, char *argv[])
     else {
         // Initialize paths for standard installation
         Path::initialize(false);
+    }
+
+    // Settings need no display, SDL device initialization, or stream process.
+    if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("settings")) {
+        QCoreApplication app(argc, argv);
+        return SettingsApi::runCommand(app.arguments());
+    }
+
+    QString action;
+    bool helpOrVersion = false;
+    for (int i = 1; i < argc; ++i) {
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        if (arg == "--") break;
+        if (arg == "--help" || arg == "-help" || arg == "-h" ||
+            arg == "--version" || arg == "-version" || arg == "-v") {
+            helpOrVersion = true;
+        }
+        if (action.isEmpty() && (arg.compare("list", Qt::CaseInsensitive) == 0 ||
+            arg.compare("stream", Qt::CaseInsensitive) == 0 ||
+            arg.compare("quit", Qt::CaseInsensitive) == 0 ||
+            arg.compare("pair", Qt::CaseInsensitive) == 0)) {
+            action = arg.toLower();
+        }
+    }
+    // Decky runs outside the graphical session. Catalog, artwork and network
+    // queries use QImage/network APIs only; never initialize Qt's platform plugin
+    // or SDL video for them. In particular, the AppImage has no EGLFS plugin.
+    if (action == "list" || helpOrVersion) {
+        QCoreApplication app(argc, argv);
+        const auto command = GlobalCommandLineParser().parse(app.arguments());
+        switch (command) {
+        case GlobalCommandLineParser::ListRequested: {
+            ListCommandLineParser listParser;
+            listParser.parse(app.arguments());
+            IdentityManager::get();
+            ComputerManager manager(StreamingPreferences::get());
+            CliListApps::Launcher launcher(listParser.getHost(), listParser);
+            // Start after the event loop so immediate failures can exit it.
+            QTimer::singleShot(0, &launcher, [&] { launcher.execute(&manager); });
+            const int result = app.exec();
+            QThreadPool::globalInstance()->waitForDone(30000);
+            return result;
+        }
+        case GlobalCommandLineParser::StreamRequested:
+            StreamCommandLineParser().parse(app.arguments(), nullptr);
+            break;
+        case GlobalCommandLineParser::QuitRequested:
+            QuitCommandLineParser().parse(app.arguments());
+            break;
+        case GlobalCommandLineParser::PairRequested:
+            PairCommandLineParser().parse(app.arguments());
+            break;
+        case GlobalCommandLineParser::NormalStartRequested:
+            break;
+        }
+        return 1; // Help/version parsers exit before reaching this point.
     }
 
     // Override the default QML cache directory with the one we chose
@@ -999,6 +1059,13 @@ int main(int argc, char *argv[])
     }
 
     QQmlApplicationEngine engine;
+    SettingsApi settingsApi(StreamingPreferences::get(&engine), nullptr, [] { return Session::get() == nullptr; });
+    // A streaming process keeps its launch snapshot. Settings mutations are
+    // handled by the standalone GUI or a short-lived headless transaction.
+    if (commandLineParserResult == GlobalCommandLineParser::NormalStartRequested && !settingsApi.listen()) {
+        qCritical() << "Another Pyrolight settings owner is running";
+        return 1;
+    }
     QString initialView;
     bool hasGUI = true;
 
@@ -1014,7 +1081,46 @@ int main(int argc, char *argv[])
             streamParser.parse(app.arguments(), preferences);
             QString host    = streamParser.getHost();
             QString appName = streamParser.getAppName();
-            auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app);
+            auto launcher   = new CliStartStream::Launcher(host, appName, preferences, &app, streamParser.getAppId(), streamParser.terminateAppId());
+            if (streamParser.integrationEvents()) {
+                auto event = [](const QString& state, const QString& error = QString()) {
+                    const QJsonObject value{{"schema", 1}, {"state", state}, {"error", error}};
+                    fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(value).toJson(QJsonDocument::Compact).constData());
+                    fflush(stdout);
+                };
+                QObject::connect(launcher, &CliStartStream::Launcher::searchingComputer, &app, [event] { event("connecting"); });
+                QObject::connect(launcher, &CliStartStream::Launcher::searchingApp, &app, [event] { event("launching"); });
+                QObject::connect(launcher, &CliStartStream::Launcher::appQuitRequired, &app, [event] { event("awaiting_confirmation"); });
+                QObject::connect(launcher, &CliStartStream::Launcher::failed, &app, [event](const QString& error) { event("failed", error); });
+                QObject::connect(launcher, &CliStartStream::Launcher::sessionCreated, &app, [event, &app](const QString&, Session* session) {
+                    event("launching");
+                    QObject::connect(session, &Session::connectionStarted, session, [event] { event("transport_ready"); });
+                    QObject::connect(session, &Session::streamingWindowReady, session, [session] {
+                        QJsonObject value{{"schema", 1}, {"state", "streaming"}, {"diagnostics", session->integrationDiagnostics()}};
+                        value["displayBackend"] = QGuiApplication::platformName();
+                        value["window"] = session->integrationWindowState();
+                        fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(value).toJson(QJsonDocument::Compact).constData());
+                        fflush(stdout);
+                    });
+                    QObject::connect(session, &Session::windowPresentationChanged, session, [session] {
+                        const QJsonObject value{{"schema", 1}, {"state", "window"},
+                            {"window", session->integrationWindowState()}};
+                        fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(value).toJson(QJsonDocument::Compact).constData());
+                        fflush(stdout);
+                    }, Qt::DirectConnection);
+                    QObject::connect(session, &Session::sessionFinished, &app, [event](int) { event("disconnected"); });
+                    QObject::connect(session, &Session::connectionQualityChanged, session, [](int status) {
+                        const QJsonObject value{{"schema", 1}, {"state", "quality"},
+                            {"quality", status == CONN_STATUS_POOR ? "poor" : "good"}};
+                        fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(value).toJson(QJsonDocument::Compact).constData());
+                        fflush(stdout);
+                    }, Qt::DirectConnection); // SDL owns the main loop while streaming; no Qt event pump.
+                    QObject::connect(session, &Session::displayLaunchError, &app, [event](const QString& error) { event("failed", error); });
+                    QObject::connect(session, &Session::stageFailed, &app, [event](const QString& stage, int code, const QString&) {
+                        event("failed", QString("%1 (%2)").arg(stage).arg(code));
+                    });
+                });
+            }
             engine.rootContext()->setContextProperty("launcher", launcher);
             break;
         }
@@ -1023,7 +1129,20 @@ int main(int argc, char *argv[])
             initialView = "qrc:/gui/CliQuitStreamSegue.qml";
             QuitCommandLineParser quitParser;
             quitParser.parse(app.arguments());
-            auto launcher = new CliQuitStream::Launcher(quitParser.getHost(), &app);
+            auto launcher = new CliQuitStream::Launcher(quitParser.getHost(), &app, quitParser.getAppId());
+            if (quitParser.integrationEvents()) {
+                auto event = [](const QString& state, const QString& error = QString()) {
+                    fprintf(stdout, "PYROLIGHT_EVENT %s\n", QJsonDocument(QJsonObject{
+                        {"schema", 1}, {"state", state}, {"error", error}}).toJson(QJsonDocument::Compact).constData());
+                    fflush(stdout);
+                };
+                QObject::connect(launcher, &CliQuitStream::Launcher::quittingApp, &app, [event] { event("ending"); });
+                QObject::connect(launcher, &CliQuitStream::Launcher::completed, &app, [event] { event("ended"); });
+                QObject::connect(launcher, &CliQuitStream::Launcher::failed, &app, [event](const QString& error) {
+                    event("failed", error);
+                    QCoreApplication::exit(1);
+                });
+            }
             engine.rootContext()->setContextProperty("launcher", launcher);
             break;
         }

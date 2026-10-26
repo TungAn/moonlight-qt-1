@@ -5,6 +5,14 @@
 #include "utils.h"
 
 #include <QSettings>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QCryptographicHash>
+#include <QMetaProperty>
+#include <QMetaEnum>
+#include <QSet>
+#include <QSignalBlocker>
+#include <cmath>
 #include <QCoreApplication>
 #include <QLocale>
 #include <QReadWriteLock>
@@ -690,6 +698,7 @@ void StreamingPreferences::emitProfileSettingChanges(const QVariantMap& oldValue
     if (changed(SER_SHOWPERFOVERLAY)) emit showPerformanceOverlayChanged();
     if (changed(SER_AUDIOCFG)) emit audioConfigChanged();
     if (changed(SER_AUDIOQUALITY)) emit audioQualityChanged();
+    if (changed(SER_PACKETSIZE)) emit packetSizeChanged();
     if (changed(SER_HDR)) emit enableHdrChanged();
     if (changed(SER_YUV444)) emit enableYUV444Changed();
     if (changed(SER_VIDEOCFG)) emit videoCodecConfigChanged();
@@ -1014,4 +1023,217 @@ bool StreamingPreferences::isPyroWaveAvailable()
 #else
     return false;
 #endif
+}
+
+
+namespace {
+const QSet<QString> globalIntegrationSettings {
+    "multiController", "enableMdns", "quitAppAfter", "absoluteMouseMode",
+    "absoluteTouchMode", "connectionWarnings", "configurationWarnings", "richPresence",
+    "gamepadMouse", "detectNetworkBlocking", "uiDisplayMode", "swapMouseButtons",
+    "backgroundGamepad", "reverseScrollDirection", "swapFaceButtons", "keepAwake",
+    "captureSysKeysMode", "language"
+};
+
+QString integrationCategory(const QString& name)
+{
+    if (QSet<QString>{"audioConfig", "audioQuality", "playAudioOnHost", "muteOnFocusLoss"}.contains(name))
+        return "Audio";
+    if (QSet<QString>{"multiController", "absoluteMouseMode", "absoluteTouchMode", "gamepadMouse",
+                     "swapMouseButtons", "backgroundGamepad", "reverseScrollDirection", "swapFaceButtons",
+                     "captureSysKeysMode"}.contains(name)) return "Controller & Input";
+    if (name.startsWith("vrr") || name == "smoothVrrFrameTiming") return "VRR Advanced";
+    if (QSet<QString>{"width", "height", "fps", "bitrateKbps", "autoAdjustBitrate", "enableVsync",
+                     "framePacing", "videoCodecConfig", "enableHdr", "enableYUV444", "windowMode",
+                     "enableVrr"}.contains(name)) return "Video & Display";
+    if (QSet<QString>{"enableMdns", "connectionWarnings", "configurationWarnings", "detectNetworkBlocking"}.contains(name))
+        return "Connection & Diagnostics";
+    return "Advanced Streaming";
+}
+
+QPair<int, int> integrationBounds(const QString& name)
+{
+    if (name == "width" || name == "height") return {1, 16384};
+    if (name == "fps") return {1, 1000};
+    if (name == "bitrateKbps") return {1, 10000000};
+    if (name == "packetSize") return {0, 65535};
+    if (name == "vrrLatencyMode") return {0, 2};
+    if (name == "vrrBufferPerMille") return {250, 4000};
+    if (name == "vrrTargetHundredths") return {9000, 9999};
+    if (name == "vrrHistorySeconds") return {10, 300};
+    if (name == "vrrToleranceUs") return {250, 2000};
+    return {0, 0};
+}
+}
+
+QJsonObject StreamingPreferences::integrationSnapshot() const
+{
+    QJsonObject values;
+    QJsonArray registry;
+    const QMetaObject* meta = metaObject();
+    for (int i = meta->propertyOffset(); i < meta->propertyCount(); ++i) {
+        const QMetaProperty property = meta->property(i);
+        if (!property.isWritable()) continue;
+        const QString name = QString::fromLatin1(property.name());
+        const QVariant value = property.read(this);
+        values[name] = property.isEnumType() ? QJsonValue(value.toInt()) : QJsonValue::fromVariant(value);
+        const auto bounds = integrationBounds(name);
+        QJsonObject descriptor {
+            {"key", name}, {"category", integrationCategory(name)},
+            {"scope", globalIntegrationSettings.contains(name) ? "global" : "profile"},
+            // No setting is advertised as live until Session has a safe runtime setter.
+            {"application", "reconnect"}, {"type", property.userType() == QMetaType::Bool ? "boolean" : "integer"},
+            {"minimum", bounds.first}, {"maximum", bounds.second}
+        };
+        QJsonArray choices;
+        if (property.isEnumType()) {
+            const QMetaEnum enumeration = property.enumerator();
+            for (int e = 0; e < enumeration.keyCount(); ++e) {
+                const int id = enumeration.value(e);
+                if (id < 0 || (name == "videoCodecConfig" && id == VCC_FORCE_HEVC_HDR_DEPRECATED)) continue;
+                choices.append(QJsonObject{{"value", id}, {"label", QString::fromLatin1(enumeration.key(e))},
+                    {"supported", name != "videoCodecConfig" || id != VCC_FORCE_PYROWAVE || isPyroWaveAvailable()}});
+            }
+        }
+        if (!choices.isEmpty()) descriptor["choices"] = choices;
+#ifndef Q_OS_DARWIN
+        if (name == "rendererSelection") descriptor["supported"] = false;
+#endif
+        if (name == "vrrLatencyMode") descriptor["choices"] = QJsonArray{
+            QJsonObject{{"value", 0}, {"label", "Smoothest"}, {"supported", true}},
+            QJsonObject{{"value", 1}, {"label", "Balanced"}, {"supported", true}},
+            QJsonObject{{"value", 2}, {"label", "Lowest latency"}, {"supported", true}}};
+        if (name.startsWith("vrr") || name == "smoothVrrFrameTiming") descriptor["requires"] = "enableVrr";
+        if (name == "bitrateKbps") descriptor["disabledWhen"] = "autoAdjustBitrate";
+        registry.append(descriptor);
+    }
+    QJsonArray profiles;
+    for (int i = 0; i < m_ProfileIds.size(); ++i)
+        profiles.append(QJsonObject{{"id", m_ProfileIds[i]}, {"name", m_ProfileNames[i]}});
+    // Include inactive profiles too: rename/delete elsewhere must invalidate old transactions.
+    QSettings settings;
+    settings.sync();
+    QJsonObject persisted;
+    for (const QString& key : settings.allKeys())
+        // INI values are typed in the writer's cache and strings in a fresh
+        // process. Canonicalize them so reading never changes the revision.
+        if (key.startsWith("profiles/")) persisted[key] = settings.value(key).toString();
+    QJsonObject revisionState{{"values", values}, {"profiles", persisted}, {"activeProfileId", m_ActiveProfileId}};
+    const QString revision = QString::fromLatin1(QCryptographicHash::hash(
+        QJsonDocument(revisionState).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
+    return {{"schema", 1}, {"ok", true}, {"revision", revision}, {"activeProfileId", m_ActiveProfileId},
+            {"activeProfileName", m_ActiveProfileName}, {"profiles", profiles}, {"values", values},
+            {"registry", registry}, {"capabilities", QJsonObject{{"pyrowave", isPyroWaveAvailable()},
+                {"displayProbe", "requires streaming display"}, {"liveUpdates", false}, {"windowReadiness", true}}}};
+}
+
+QJsonObject StreamingPreferences::integrationRequest(const QJsonObject& request)
+{
+    auto error = [](const QString& code, const QString& message) -> QJsonObject {
+        return {{"schema", 1}, {"ok", false}, {"error", QJsonObject{{"code", code}, {"message", message}}}};
+    };
+    if (request.value("schema").toInt() != 1) return error("schema", "Unsupported settings schema");
+    const QString operation = request.value("operation").toString();
+    if (operation == "read") return integrationSnapshot();
+    if (operation == "defaults") {
+        StreamingPreferences defaults(nullptr);
+        defaults.applyProfileSettings(defaultProfileSettings());
+        QJsonObject values;
+        for (int i = metaObject()->propertyOffset(); i < metaObject()->propertyCount(); ++i) {
+            const auto property = metaObject()->property(i);
+            if (!property.isWritable() || globalIntegrationSettings.contains(property.name())) continue;
+            values[property.name()] = property.isEnumType() ? QJsonValue(property.read(&defaults).toInt()) :
+                QJsonValue::fromVariant(property.read(&defaults));
+        }
+        auto result = integrationSnapshot();
+        result["profileDefaults"] = values;
+        return result;
+    }
+    if (operation == "prepare-launch") {
+        // Include edits in the standalone GUI even if its settings page is
+        // still open. The next process must start from this exact snapshot.
+        save();
+        QSettings settings;
+        settings.sync();
+        if (settings.status() != QSettings::NoError) return error("storage", "Could not persist launch settings");
+        return integrationSnapshot();
+    }
+    const QJsonObject snapshot = integrationSnapshot();
+    if (request.value("revision").toString().isEmpty() || request.value("revision") != snapshot.value("revision"))
+        return error("conflict", "Pyrolight settings changed. Refresh before applying this draft.");
+    if (operation == "patch" || operation == "validate") {
+        if (!request.value("values").isObject()) return error("validation", "Expected settings object");
+        const QJsonObject changes = request.value("values").toObject();
+        QJsonObject proposed = snapshot.value("values").toObject();
+        // Validate the whole patch before writing any property or emitting a signal.
+        for (auto it = changes.begin(); it != changes.end(); ++it) {
+            const QByteArray key = it.key().toLatin1();
+            const int index = metaObject()->indexOfProperty(key.constData());
+            if (index < metaObject()->propertyOffset()) return error("validation", "Unknown setting: " + it.key());
+            const QMetaProperty property = metaObject()->property(index);
+            if (!property.isWritable()) return error("validation", "Read-only setting: " + it.key());
+            if (property.userType() == QMetaType::Bool) {
+                if (!it->isBool()) return error("validation", "Expected boolean: " + it.key());
+            } else {
+                if (!it->isDouble() || !std::isfinite(it->toDouble()) || std::floor(it->toDouble()) != it->toDouble())
+                    return error("validation", "Expected integer: " + it.key());
+                const auto bounds = integrationBounds(it.key());
+                if (property.isEnumType()) {
+                    if (!property.enumerator().valueToKey(it->toInt(-999))) return error("validation", "Invalid choice: " + it.key());
+                    if (it->toInt() < 0) return error("validation", "Probe-only choice");
+                } else if (it->toDouble() < bounds.first || it->toDouble() > bounds.second)
+                    return error("validation", "Out of range: " + it.key());
+            }
+            proposed[it.key()] = it.value();
+        }
+        const int codec = proposed.value("videoCodecConfig").toInt();
+        if (codec == VCC_FORCE_HEVC_HDR_DEPRECATED) return error("validation", "Use HEVC and the HDR option");
+        if (codec == VCC_FORCE_PYROWAVE && !isPyroWaveAvailable()) return error("capability", "PyroWave decoder is unavailable");
+        if (proposed.value("enableVrr").toBool() && !proposed.value("enableVsync").toBool())
+            return error("validation", "VRR requires V-Sync");
+#ifndef Q_OS_DARWIN
+        if (changes.contains("rendererSelection") && changes.value("rendererSelection").toInt() != RS_AUTO)
+            return error("capability", "Renderer selection is available on macOS only");
+#endif
+        if (operation == "validate") return snapshot;
+        const QVariantMap previous = profileSettings();
+        {
+            QSignalBlocker blocker(this);
+            if (changes.contains("vrrLatencyMode")) applyVrrPreset(changes.value("vrrLatencyMode").toInt());
+            for (auto it = changes.begin(); it != changes.end(); ++it) {
+                const QMetaProperty property = metaObject()->property(metaObject()->indexOfProperty(it.key().toLatin1().constData()));
+                if (it.key() != "vrrLatencyMode") property.write(this, it->toVariant());
+            }
+            // Reuse profile normalization and the authoritative bitrate calculation.
+            applyProfileSettings(profileSettings());
+        }
+        emitProfileSettingChanges(previous, profileSettings());
+        for (auto it = changes.begin(); it != changes.end(); ++it) {
+            if (!globalIntegrationSettings.contains(it.key())) continue;
+            const QMetaProperty property = metaObject()->property(metaObject()->indexOfProperty(it.key().toLatin1().constData()));
+            if (property.hasNotifySignal()) property.notifySignal().invoke(this, Qt::DirectConnection);
+        }
+        save();
+    } else {
+        const QString id = request.value("profileId").toString();
+        const QString name = request.value("name").toString();
+        bool ok = false;
+        if (operation == "create") ok = createProfile(name);
+        else if (operation == "duplicate") ok = duplicateProfile(id, name);
+        else if (operation == "rename") ok = renameProfile(id, name);
+        else if (operation == "delete") ok = deleteProfile(id);
+        else if (operation == "activate") ok = activateProfile(id);
+        else if (operation == "restore") {
+            const QVariantMap previous = profileSettings();
+            applyProfileSettings(defaultProfileSettings());
+            emitProfileSettingChanges(previous, profileSettings());
+            save();
+            ok = true;
+        } else return error("operation", "Unknown settings operation");
+        if (!ok) return error("profile", lastProfileError());
+    }
+    QSettings settings;
+    settings.sync();
+    if (settings.status() != QSettings::NoError) return error("storage", "Could not persist Pyrolight settings");
+    return integrationSnapshot();
 }

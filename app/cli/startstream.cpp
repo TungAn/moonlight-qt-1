@@ -1,4 +1,5 @@
 #include "startstream.h"
+#include "streamswitchpolicy.h"
 #include "backend/computermanager.h"
 #include "backend/computerseeker.h"
 #include "streaming/session.h"
@@ -100,12 +101,24 @@ public:
                 if (-1 != index) {
                     app = m_Computer->appList[index];
                     m_TimeoutTimer->stop();
-                    if (isNotStreaming() || isStreamingApp(app)) {
+                    const auto decision = StreamSwitch::decide(m_Computer->currentGameId, app.id, m_TerminateAppId);
+                    if (decision == StreamSwitch::Decision::Start || decision == StreamSwitch::Decision::Resume) {
                         m_State = StateStartSession;
                         session = new Session(m_Computer, app, m_Preferences);
                         emit q->sessionCreated(app.name, session);
-                    } else {
-                        emit q->appQuitRequired(getCurrentAppName());
+                    } else if (!m_QuitRequested) {
+                        if (decision == StreamSwitch::Decision::Refuse) {
+                            m_State = StateFailure;
+                            emit q->failed(QObject::tr("The running application changed. No game was terminated. Retry the switch."));
+                        } else {
+                            m_ExpectedQuitAppId = m_Computer->currentGameId;
+                            m_QuitRequested = true;
+                            if (decision == StreamSwitch::Decision::Terminate) {
+                                m_ComputerManager->quitRunningApp(m_Computer, m_ExpectedQuitAppId);
+                            } else {
+                                emit q->appQuitRequired(getCurrentAppName());
+                            }
+                        }
                     }
                 }
             }
@@ -114,7 +127,7 @@ public:
         // confirmation dialog
         case Event::AppQuitRequested:
             if (m_State == StateSeekApp) {
-                m_ComputerManager->quitRunningApp(m_Computer);
+                m_ComputerManager->quitRunningApp(m_Computer, m_ExpectedQuitAppId);
             }
             break;
         // Occurs when the previous app quit has been completed, handles quitting errors if any
@@ -143,21 +156,12 @@ public:
     int getAppIndex() const
     {
         for (int i = 0; i < m_Computer->appList.length(); i++) {
-            if (m_Computer->appList[i].name.toLower() == m_AppName.toLower()) {
+            if (m_AppId != 0 ? m_Computer->appList[i].id == m_AppId :
+                m_Computer->appList[i].name.toLower() == m_AppName.toLower()) {
                 return i;
             }
         }
         return -1;
-    }
-
-    bool isNotStreaming() const
-    {
-        return m_Computer->currentGameId == 0;
-    }
-
-    bool isStreamingApp(NvApp app) const
-    {
-        return m_Computer->currentGameId == app.id;
     }
 
     QString getCurrentAppName() const
@@ -173,6 +177,10 @@ public:
     Launcher *q_ptr;
     QString m_ComputerName;
     QString m_AppName;
+    int m_AppId = 0;
+    int m_TerminateAppId = 0;
+    int m_ExpectedQuitAppId = 0;
+    bool m_QuitRequested = false;
     StreamingPreferences *m_Preferences;
     ComputerManager *m_ComputerManager;
     ComputerSeeker *m_ComputerSeeker;
@@ -182,13 +190,15 @@ public:
 };
 
 Launcher::Launcher(QString computer, QString app,
-                   StreamingPreferences* preferences, QObject *parent)
+                   StreamingPreferences* preferences, QObject *parent, int appId, int terminateAppId)
     : QObject(parent),
       m_DPtr(new LauncherPrivate(this))
 {
     Q_D(Launcher);
     d->m_ComputerName = computer;
     d->m_AppName = app;
+    d->m_AppId = appId;
+    d->m_TerminateAppId = terminateAppId;
     d->m_Preferences = preferences;
     d->m_State = StateInit;
     d->m_TimeoutTimer = new QTimer(this);

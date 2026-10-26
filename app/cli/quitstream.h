@@ -17,7 +17,7 @@ class Launcher : public QObject
     Q_DECLARE_PRIVATE_D(m_DPtr, Launcher)
 
 public:
-    explicit Launcher(QString computer, QObject *parent = nullptr);
+    explicit Launcher(QString computer, QObject *parent = nullptr, int expectedAppId = 0);
     ~Launcher();
 
     Q_INVOKABLE void execute(ComputerManager *manager);
@@ -27,6 +27,7 @@ signals:
     void searchingComputer();
     void quittingApp();
     void failed(QString text);
+    void completed();
 
 private slots:
     void onComputerFound(NvComputer *computer);

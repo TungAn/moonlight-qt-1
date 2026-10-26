@@ -80,9 +80,14 @@ public:
         case Event::ComputerFound:
             if (m_State == StateSeekComputer) {
                 if (event.computer->pairState == NvComputer::PS_PAIRED) {
+                    if (m_ExpectedAppId != 0 && event.computer->currentGameId != m_ExpectedAppId) {
+                        m_State = StateFailure;
+                        emit q->failed(QStringLiteral("The running application changed. Refusing to end another game."));
+                        return;
+                    }
                     m_State = StateQuitApp;
                     emit q->quittingApp();
-                    m_ComputerManager->quitRunningApp(event.computer);
+                    m_ComputerManager->quitRunningApp(event.computer, m_ExpectedAppId);
                 } else {
                     m_State = StateFailure;
                     QString msg = QObject::tr("Computer %1 has not been paired. "
@@ -96,6 +101,7 @@ public:
         case Event::AppQuitCompleted:
             if (m_State == StateQuitApp) {
                 if (event.errorMessage.isEmpty()) {
+                    emit q->completed();
                     QCoreApplication::exit(0);
                 } else {
                     m_State = StateFailure;
@@ -109,17 +115,19 @@ public:
     Launcher *q_ptr;
     ComputerManager *m_ComputerManager;
     QString m_ComputerName;
+    int m_ExpectedAppId = 0;
     ComputerSeeker *m_ComputerSeeker;
     State m_State;
     QTimer *m_TimeoutTimer;
 };
 
-Launcher::Launcher(QString computer, QObject *parent)
+Launcher::Launcher(QString computer, QObject *parent, int expectedAppId)
     : QObject(parent),
       m_DPtr(new LauncherPrivate(this))
 {
     Q_D(Launcher);
     d->m_ComputerName = computer;
+    d->m_ExpectedAppId = expectedAppId;
     d->m_State = StateInit;
     d->m_TimeoutTimer = new QTimer(this);
     d->m_TimeoutTimer->setSingleShot(true);

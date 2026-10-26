@@ -646,8 +646,8 @@ class PendingQuitTask : public QObject, public QRunnable
     Q_OBJECT
 
 public:
-    PendingQuitTask(ComputerManager* computerManager, NvComputer* computer)
-        : m_Computer(computer)
+    PendingQuitTask(ComputerManager* computerManager, NvComputer* computer, int expectedAppId)
+        : m_Computer(computer), m_ExpectedAppId(expectedAppId)
     {
         connect(this, &PendingQuitTask::quitAppFailed,
                 computerManager, &ComputerManager::quitAppCompleted);
@@ -663,7 +663,7 @@ private:
 
         try {
             if (m_Computer->currentGameId != 0) {
-                http.quitApp();
+                http.quitApp(m_ExpectedAppId);
             }
         } catch (const GfeHttpResponseException& e) {
             {
@@ -688,14 +688,15 @@ private:
     }
 
     NvComputer* m_Computer;
+    int m_ExpectedAppId;
 };
 
-void ComputerManager::quitRunningApp(NvComputer* computer)
+void ComputerManager::quitRunningApp(NvComputer* computer, int expectedAppId)
 {
     QWriteLocker lock(&computer->lock);
     computer->pendingQuit = true;
 
-    PendingQuitTask* quit = new PendingQuitTask(this, computer);
+    PendingQuitTask* quit = new PendingQuitTask(this, computer, expectedAppId);
     QThreadPool::globalInstance()->start(quit);
 }
 
