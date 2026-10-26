@@ -206,6 +206,11 @@ pushd $INSTALLER_FOLDER
 #
 # Don't bundle libwayland-*: like EGL and the Vulkan ICDs, they belong to the host graphics stack
 # (see opt/wayland-fallback above). SDL3 dlopen()s them and libdecor from the host.
+#
+# Don't bundle libvulkan: the loader must match the host's drivers and implicit layers. The
+# build-environment loader has no Wayland WSI, so under Gamescope (SteamOS Game Mode) its WSI
+# layer, which turns the X11 surface into a Wayland one, called a null vkCreateWaylandSurfaceKHR
+# and Pyrolight crashed at stream start.
 VERSION=$VERSION OUTPUT="Pyrolight-$VERSION-$(uname -m).AppImage" $LINUXDEPLOY --appdir $DEPLOY_FOLDER \
   --library=/usr/local/lib/libSDL3.so.0 \
   "${LINUXDEPLOY_EXTRA_ARGS[@]}" \
@@ -219,6 +224,7 @@ VERSION=$VERSION OUTPUT="Pyrolight-$VERSION-$(uname -m).AppImage" $LINUXDEPLOY -
   --exclude-library=libwayland-cursor.so* \
   --exclude-library=libwayland-egl.so* \
   --exclude-library=libwayland-server.so* \
+  --exclude-library=libvulkan.so* \
   --output appimage || fail "linuxdeploy failed!"
 popd
 

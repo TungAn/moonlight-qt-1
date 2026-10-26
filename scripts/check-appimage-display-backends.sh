@@ -40,7 +40,8 @@ done
 
 # Host graphics stack: never bundled where the loader would find it first.
 bundled=$(find "$APPDIR/usr" \( -name 'libwayland-*.so*' -o -name 'libva*.so*' -o -name 'libEGL*.so*' \
-                                -o -name 'libGL*.so*' -o -name 'libgbm.so*' -o -name 'libdrm.so*' -o -name 'libdecor-0.so*' \) -print)
+                                -o -name 'libGL*.so*' -o -name 'libgbm.so*' -o -name 'libdrm.so*' -o -name 'libdecor-0.so*' \
+                                -o -name 'libvulkan.so*' \) -print)
 check "No host graphics-stack libraries are bundled in usr/${bundled:+ (found: $bundled)}" '[ -z "$bundled" ]'
 
 check "libwayland-client fallback is staged" '[ -f "$APPDIR/opt/wayland-fallback/libwayland-client.so.0" ] && [ -x "$APPDIR/opt/wayland-fallback/wayland-probe" ]'
