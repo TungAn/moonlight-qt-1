@@ -100,9 +100,12 @@ public:
     int serverCodecModeSupport;
     // Optional paired-host /serverinfo extension; zero means unknown.
     uint32_t pyrowaveHostLinkMbps = 0;
+    // Compression is opt-in and requires an exact protocol version match.
+    uint32_t pyrowaveCompressionVersion = 0;
     QString gpuModel;
     bool isSupportedServerVersion;
     // Optional /serverinfo extension; absent fields never imply integration.
+    bool sleepActionSupportedAndAllowed = false;
     bool frameLimiterSupported = false;
     bool frameLimiterEnabled = false;
     bool virtualDisplayFrameLimiterEnabled = false;

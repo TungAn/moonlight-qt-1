@@ -68,19 +68,38 @@ if [ "$BUILD_CONFIG" == "Debug" ]; then EXTRA_ARGS="$EXTRA_ARGS -use-debug-libs"
 echo Extra deployment arguments: $EXTRA_ARGS
 macdeployqt $BUILD_FOLDER/app/Moonlight.app $EXTRA_ARGS -qmldir=$SOURCE_ROOT/app/gui -appstore-compliant || fail "macdeployqt failed!"
 
+# Apple bundle versions remain numeric; nightly identity and source are explicit.
+if [[ "$VERSION" =~ ^6\.[12]\.0-daily\.([1-9][0-9]*)$ ]]; then
+  NIGHTLY_SEQUENCE="${BASH_REMATCH[1]}"
+  NIGHTLY_SOURCE=$(git rev-parse HEAD) || fail "Could not resolve nightly source"
+  PLIST="$BUILD_FOLDER/app/Moonlight.app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 6.2.$NIGHTLY_SEQUENCE" "$PLIST" || fail "Could not set nightly bundle version"
+  /usr/libexec/PlistBuddy -c "Add :MoonlightNightlyVersion string $VERSION" "$PLIST" || fail "Could not set nightly identity"
+  /usr/libexec/PlistBuddy -c "Add :MoonlightSourceCommit string $NIGHTLY_SOURCE" "$PLIST" || fail "Could not set nightly source"
+fi
+
 echo Removing dSYM files from app bundle
 find $BUILD_FOLDER/app/Moonlight.app/ -name '*.dSYM' | xargs rm -rf
 
 if [ "$SIGNING_IDENTITY" != "" ]; then
   echo Signing app bundle
   codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" $BUILD_FOLDER/app/Moonlight.app || fail "Signing failed!"
+else
+  # Seal the app and its non-Qt dependencies after all metadata and resource
+  # edits. Deployment-time ad hoc signatures may be stale or incomplete. This
+  # is not a Developer ID signature and does not make the nightly notarized.
+  echo Ad-hoc signing completed app bundle
+  codesign --force --deep --sign - "$BUILD_FOLDER/app/Moonlight.app" || fail "Ad-hoc signing failed!"
 fi
+
+codesign --verify --deep --strict "$BUILD_FOLDER/app/Moonlight.app" || fail "App bundle signature verification failed!"
 
 echo Creating DMG
 if [ "$SIGNING_IDENTITY" != "" ]; then
   create-dmg $BUILD_FOLDER/app/Moonlight.app $INSTALLER_FOLDER --identity="$SIGNING_IDENTITY" --no-version-in-filename || fail "create-dmg failed!"
 else
-  create-dmg $BUILD_FOLDER/app/Moonlight.app $INSTALLER_FOLDER --no-version-in-filename
+  # Keep unsigned builds unverified even if this machine has a signing identity.
+  create-dmg $BUILD_FOLDER/app/Moonlight.app $INSTALLER_FOLDER --no-version-in-filename --no-code-sign
   case $? in
     0) ;;
     2) ;;

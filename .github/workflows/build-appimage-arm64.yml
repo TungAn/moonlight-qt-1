@@ -49,7 +49,7 @@ jobs:
             libxext-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libxss-dev libxt-dev libxv-dev libxxf86vm-dev libxcb-dri3-dev libx11-xcb-dev \
             libxfixes-dev libxtst-dev wayland-protocols libopus-dev libvdpau-dev libgl-dev libpipewire-0.3-dev liburing-dev cmake \
             build-essential git wget pkg-config autoconf automake libtool ninja-build python3-jinja2 file \
-            libwayland-dev libegl-dev qt6-wayland
+            libwayland-dev libegl-dev qt6-wayland qt6-wayland-dev libqt6waylandclient6 libqt6waylandcompositor6 libdecor-0-dev qml6-module-qtqml-models
           sudo pip3 install meson
           mkdir -p dep_root/{bin,include,lib} deps
           echo "DEP_ROOT=$PWD/dep_root" >> "${GITHUB_ENV}"

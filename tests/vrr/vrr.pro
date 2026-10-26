@@ -3,11 +3,20 @@
 TEMPLATE = subdirs
 CONFIG += ordered
 
+macx {
+    macdisplaytiming.file = $$PWD/macdisplaytiming.pro
+    SUBDIRS += macdisplaytiming
+}
+
 dxgipresent.file = $$PWD/dxgipresent.pro
 SUBDIRS += dxgipresent
 
 presentationclock.file = $$PWD/presentationclock.pro
 SUBDIRS += presentationclock
+tracemetrics.file = $$PWD/tracemetrics.pro
+SUBDIRS += tracemetrics
+compositionpresentpolicy.file = $$PWD/compositionpresentpolicy.pro
+SUBDIRS += compositionpresentpolicy
 
 win32 {
     compositionprobe.file = $$PWD/compositionprobe.pro
@@ -19,6 +28,8 @@ unix:!macx:packagesExist(libplacebo) {
     SUBDIRS += plvkpresentation
     plvkswapchain.file = $$PWD/plvkswapchain.pro
     SUBDIRS += plvkswapchain
+    plvkoffscreen.file = $$PWD/plvkoffscreen.pro
+    SUBDIRS += plvkoffscreen
 }
 
 unix:!macx:packagesExist(sdl2) {
@@ -36,6 +47,10 @@ d3d11bindpolicy.file = $$PWD/d3d11bindpolicy.pro
 SUBDIRS += d3d11bindpolicy
 gamescopecomposition.file = $$PWD/gamescopecomposition.pro
 SUBDIRS += gamescopecomposition
+linux:packagesExist(sdl2) {
+    gpuperformancehold.file = $$PWD/gpuperformancehold.pro
+    SUBDIRS += gpuperformancehold
+}
 linux:packagesExist(vulkan) {
     vulkantiming.file = $$PWD/vulkantiming.pro
     SUBDIRS += vulkantiming
@@ -45,12 +60,19 @@ unix:!macx:packagesExist(wayland-server sdl2) {
     SUBDIRS += waylandfeedback
 }
 
+preferences.file = $$PWD/preferences.pro
+SUBDIRS += preferences
+
 timingcontroller.file = $$PWD/timingcontroller.pro
+sourcegapsmoothing.file = $$PWD/sourcegapsmoothing.pro
+SUBDIRS += sourcegapsmoothing
 framelimitercapabilities.file = $$PWD/framelimitercapabilities.pro
 ratepolicy.file = $$PWD/ratepolicy.pro
 diagnostics.file = $$PWD/diagnostics.pro
 pacingworker.file = $$PWD/pacingworker.pro
 replay.file = $$PWD/replay.pro
+workerreplay.file = $$PWD/workerreplay.pro
+SUBDIRS += workerreplay
 replayconfig.file = $$PWD/replayconfig.pro
 queuesim.file = $$PWD/queuesim.pro
 
@@ -72,4 +94,35 @@ SUBDIRS += profile
 linux:packagesExist(wayland-client wayland-server) {
     gamescoperepaint.file = $$PWD/gamescoperepaint.pro
     SUBDIRS += gamescoperepaint
+    kwinscanoutguard.file = $$PWD/kwinscanoutguard.pro
+    SUBDIRS += kwinscanoutguard
 }
+
+phasetrajectory.file = $$PWD/phasetrajectory.pro
+SUBDIRS += phasetrajectory
+inputpercentileintegration.file = $$PWD/inputpercentileintegration.pro
+SUBDIRS += inputpercentileintegration
+inputcontracts.file = $$PWD/inputcontracts.pro
+SUBDIRS += inputcontracts
+# Production-policy buffer regression gate; fast enough to run on every build.
+bufferregressions.file = $$PWD/bufferregressions.pro
+SUBDIRS += bufferregressions
+rollingquantile.file = $$PWD/rollingquantile.pro
+SUBDIRS += rollingquantile
+
+performancestats.file = $$PWD/performancestats.pro
+SUBDIRS += performancestats
+
+# Clock-relative history and bounded recovery credit regression.
+SUBDIRS += inputaccounting
+inputaccounting.file = $$PWD/inputaccounting.pro
+
+receivedriftclock.file = $$PWD/receivedriftclock.pro
+SUBDIRS += receivedriftclock
+
+# Effective production policy must select the matching cache namespace.
+vrrcacheidentity.file = $$PWD/vrrcacheidentity.pro
+SUBDIRS += vrrcacheidentity
+
+inputtracechunks.file = $$PWD/inputtracechunks.pro
+SUBDIRS += inputtracechunks

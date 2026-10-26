@@ -5,11 +5,16 @@
 #include <cstdint>
 #include <vector>
 
+#include "presenttiming.h"
+#include "absorbedjitter.h"
+#include "inputpercentilebuffer.h"
+#include "cadencedetection.h"
+
 namespace Vrr13 {
-// One definition for buffering and reporting: mean absolute client-added
-// interval error, including zero-error intervals, over the last second. The
-// caller selects the profile tolerance; the quality score retains the
-// preset's longer history independently of that one-second detection average.
+// Client-added interval error, including zero-error intervals. Production
+// applies tolerance to each interval before averaging loss for both reporting
+// and control. Recorded revisions 7/8 average before tolerance; revision 10 uses a
+// separate mean-before-tolerance control history for exact historical replay.
 class IntervalBuffer {
 public:
     static constexpr uint64_t ToleranceUs = 500;
@@ -19,16 +24,26 @@ public:
         uint64_t frame = 0, intended = 0, submitted = 0, deadline = 0, ready = 0, buffer = 0;
         bool valid = false, absorbable = false;
         uint64_t serialService = 0, decoderQueue = 0;
+        uint64_t inputSlot = 0;
+        int64_t inputRequired = 0;
+        bool inputValid = false;
     };
     // Observation only. This explains the request made after an outcome;
     // the controller applies that request to subsequent frames. In particular,
     // rejected growth is not retained as debt or fed back into demand().
     enum class Action : uint8_t {
         Learning, SequenceBreak, Grow, Capped, CurrentPressure, HistoryHold,
-        RecoveryHold, Release, Minimum, NotAbsorbable, Cooldown, NoFreshMiss, LimitChange
+        RecoveryHold, Release, Minimum, NotAbsorbable, Cooldown, NoFreshMiss, LimitChange, AbsorbedJitterHold, InputPercentileGrow, InputPercentileRelease, InputPercentileHold, InputPercentileUnknown, InputPercentileMissHold, InputPercentileBackoff
     };
     static const char* actionName(Action action) {
         switch (action) {
+        case Action::InputPercentileBackoff: return "input misses slow release";
+        case Action::InputPercentileMissHold: return "input buffer miss release pause";
+        case Action::InputPercentileGrow: return "input percentile rise";
+        case Action::InputPercentileRelease: return "input percentile release";
+        case Action::InputPercentileHold: return "input percentile target";
+        case Action::InputPercentileUnknown: return "expired unknown input release";
+        case Action::AbsorbedJitterHold: return "absorbed input jitter hold";
         case Action::Learning: return "learning";
         case Action::SequenceBreak: return "sequence break";
         case Action::Grow: return "late-work growth";
@@ -57,21 +72,40 @@ public:
         double averageErrorUs = 0;
         uint64_t evaluatedUs = 0, failedUs = 0;
         double weightedLossUs = 0;
+        // Separate control history: never substitute it for client timing.
+        uint64_t bufferFailedUs = 0;
+        double bufferWeightedLossUs = 0;
         uint64_t toleranceUs = ToleranceUs;
+        uint64_t scoreWindowUs = 30000000;
         bool severityWeighted = false;
         bool averageValid = false;
         bool serviceOverloaded = false; // Qualified one-second workload, diagnostic only.
         bool initialCalibrationComplete = false;
         uint64_t calibrationCoverageUs = 0, calibrationSamples = 0;
+        uint64_t inputReleaseAllowed = 0, inputReleaseHeld = 0, inputReleaseUnknown = 0;
+        uint64_t inputEvidenceUs = 0, inputCandidateUs = 0;
+        double inputCandidateLoss = 0, inputCurrentLoss = 0;
+        bool inputPercentileEnabled = false;
+        InputPercentileBuffer::Stats inputPercentile;
         Update update;
         uint64_t lastGrowthAtUs = 0, lastGrowthUs = 0;
         uint64_t lastClippedAtUs = 0, lastClippedUs = 0;
+        // Filled by the controller; post-submission timing never changes
+        // this buffer's score or requests.
+        PresentTiming::Stats present;
+        CadenceDetection::Stats submissionCadence, displayCadence;
         double lossFraction() const {
             return evaluatedUs ? std::clamp(
                 (severityWeighted ? weightedLossUs : double(failedUs)) / evaluatedUs,
                 0.0, 1.0) : 0.0;
         }
         double qualityPercent() const { return 100.0 * (1.0 - lossFraction()); }
+        double bufferLossFraction() const {
+            return evaluatedUs ? std::clamp(
+                (severityWeighted ? bufferWeightedLossUs : double(bufferFailedUs)) / evaluatedUs,
+                0.0, 1.0) : 0.0;
+        }
+        double bufferQualityPercent() const { return 100.0 * (1.0 - bufferLossFraction()); }
     };
     void observe(const Sample& s, uint64_t minimum, uint64_t maximum,
                  uint64_t hold, uint64_t releaseRate,
@@ -82,8 +116,13 @@ public:
                  size_t initialMinimumSamples = 2,
                  uint64_t recentPressureRelease = 0,
                  uint64_t serialServiceGate = 0,
-                 bool holdRenewsBelowTargetOnly = false) {
+                 uint64_t holdRenewBelowTarget = 0,
+                 bool perIntervalExcess = false,
+                 bool averageBufferControl = false,
+                 bool historyDriven = false,
+                 bool absorbedJitterRelease = false) {
         m_Stats.toleranceUs = toleranceUs;
+        m_Stats.scoreWindowUs = scoreWindowUs;
         m_Stats.severityWeighted = severityWeighted;
         minimum = std::min(minimum, maximum);
         if (!m_Initialized) { m_Target = s.buffer; m_Initialized = true; }
@@ -123,6 +162,10 @@ public:
         if (beforeUs != boundedUs) update.action = Action::LimitChange;
         update.minimumUs = minimum;
         update.maximumUs = maximum;
+        if (absorbedJitterRelease) {
+            m_Input.observe(s.frame, s.submitted, s.inputSlot, s.inputRequired,
+                s.valid && s.absorbable && s.inputValid);
+        }
         m_Previous = s;
         m_HavePrevious = s.valid && s.submitted && s.intended;
         if (!adjacent) {
@@ -164,34 +207,59 @@ public:
         m_Stats.calibrationCoverageUs = s.submitted - m_First;
         m_Stats.averageValid = samples >= 2 && m_SequenceSamples >= m_SequenceMinimumSamples &&
             m_Stats.calibrationCoverageUs >= m_SequenceWarmupUs;
-        if (!m_Stats.averageValid) {
+        if (!m_Stats.averageValid && !historyDriven) {
             updateScore(s.submitted, scoreWindowUs);
             return;
         }
-        m_Stats.initialCalibrationComplete = true;
-        m_Stats.serviceOverloaded = service > intendedTime || decoderQueue > intendedTime;
+        if (m_Stats.averageValid) m_Stats.initialCalibrationComplete = true;
+        m_Stats.serviceOverloaded = m_Stats.averageValid &&
+            (service > intendedTime || decoderQueue > intendedTime);
         const bool pressure = total > samples * toleranceUs;
-        // Weight the score by evaluated time, not frame rate. Attribute the
-        // preceding interval to its evaluated one-second mean; gaps are unknown.
-        auto& score = m_Score[(s.submitted / 100000) % m_Score.size()];
+        // Weight the score by evaluated time, not frame rate; gaps are unknown.
+        // Revision 9 applies tolerance before averaging so clean intervals
+        // cannot erase excess from isolated late/catch-up intervals.
+        // Advance membership before replacing a ring bucket. No score is read
+        // by a decision until updateScore() below finishes the weighted fold.
+        prepareScore(s.submitted, scoreWindowUs);
+        const size_t scoreIndex = (s.submitted / ScoreBucketUs) % m_Score.size();
+        auto& score = m_Score[scoreIndex];
+        const ScoreBucket scoreBefore = score;
         if (score.tick != s.submitted / 100000) score = ScoreBucket{s.submitted / 100000};
         score.evaluated += actual;
-        if (pressure) score.failed += actual;
+        if (perIntervalExcess ? error > toleranceUs : pressure) score.failed += actual;
         // Revision 7 measures severity rather than treating a tiny crossing as
         // a completely failed interval. Keep sub-microsecond loss in double so
         // Smooth's 99.99% target is not biased by per-frame rounding.
-        const double excessUs = std::max(0.0, m_Stats.averageErrorUs - toleranceUs);
+        const double excessUs = std::max(0.0,
+            (perIntervalExcess ? double(error) : m_Stats.averageErrorUs) - toleranceUs);
         const double loss = std::min(1.0, excessUs / intended);
         if (severityWeighted) score.weightedLoss += actual * loss;
+        // Revision 10 keeps the accurate report above, but restores revision
+        // 7/8's averaging for every control decision, including history-based
+        // growth qualification and hold/release. Relaxing attack alone would
+        // still let isolated reported misses pin the buffer's release hold.
+        const double bufferExcessUs = averageBufferControl ?
+            std::max(0.0, m_Stats.averageErrorUs - toleranceUs) : excessUs;
+        const double bufferLoss = std::min(1.0, bufferExcessUs / intended);
+        if (averageBufferControl ? pressure : (perIntervalExcess ? error > toleranceUs : pressure))
+            score.bufferFailed += actual;
+        if (severityWeighted) score.bufferWeightedLoss += actual * bufferLoss;
+        scoreChanged(scoreIndex, scoreBefore);
         updateScore(s.submitted, scoreWindowUs);
 
+        // Revision 12 retains every observed adjacent interval in the long
+        // history. Qualification guards buffer changes, not measurement:
+        // discarding a second after each break made a 2-minute score behave
+        // like a much shorter history in sessions with repeated frame gaps.
+        if (!m_Stats.averageValid) return;
+
         const double allowedLoss = (1000000 - std::min<uint64_t>(targetPerMillion, 1000000)) / 1000000.0;
-        const bool belowTarget = m_Stats.lossFraction() > allowedLoss;
-        const bool currentPressure = severityWeighted ? loss > allowedLoss : pressure;
+        const bool belowTarget = m_Stats.bufferLossFraction() > allowedLoss;
+        const bool currentPressure = severityWeighted ? bufferLoss > allowedLoss : pressure;
         // Old score debt holds protection, but cannot authorize another attack
         // without current, attributable error outside the preset's allowance.
         const bool historicalPressure = severityWeighted && belowTarget;
-        const bool historyHolds = !recentPressureRelease && historicalPressure;
+        const bool historyHolds = (!recentPressureRelease || historyDriven) && historicalPressure;
         const auto& delayed = actual >= intended ? s : previous;
         const auto lateness = delayed.ready > delayed.deadline ? delayed.ready - delayed.deadline : 0;
         const bool freshError = severityWeighted ? error > toleranceUs : error != 0;
@@ -205,14 +273,18 @@ public:
         // service overload, cannot be repaired by retaining standing delay.
         // Keep the normal hold between attributable misses; do not change the
         // long quality score, attack qualification, or gradual release rate.
-        const bool pressureHolds = currentPressure &&
+        // Revision 2 permits continued recovery while the long score meets
+        // the preset target, even when recent pressure moves that score.
+        // Revision 1 only suppressed hold renewal and still paused release.
+        const bool targetAllowsHold = holdRenewBelowTarget < 2 ||
+            !severityWeighted || belowTarget;
+        const bool pressureHolds = targetAllowsHold && currentPressure &&
             (recentPressureRelease < 2 || (freshError && delayedAbsorbable && lateness));
         const bool holdProtection = pressureHolds ||
-            historyHolds;
-        // While the score still meets the target, a small dip pauses release
-        // for that frame without restarting the clean-time hold.
+            (targetAllowsHold && historyHolds);
+        // Preserve revision 1's above-target pause for historical captures.
         const bool renewsHold = holdProtection &&
-            (!holdRenewsBelowTargetOnly || !severityWeighted || belowTarget);
+            (!holdRenewBelowTarget || !severityWeighted || belowTarget);
         if (renewsHold) {
             m_LastPressure = s.submitted;
             if (severityWeighted) m_ReleaseFraction = 0;
@@ -223,11 +295,14 @@ public:
         // keeping a raised delay forever when a frame is missed every few
         // seconds, without counting the unknown gap as clean playback.
         if (recentPressureRelease >= 3) {
-            if (renewsHold || !s.absorbable || !windowAbsorbable) {
+            // A capacity dip pauses qualified recovery, but revision 3
+            // must not erase it while the long score meets the target.
+            if (renewsHold || ((holdRenewBelowTarget < 3 || targetAllowsHold) &&
+                               (!s.absorbable || !windowAbsorbable))) {
                 m_CleanEvidenceUs = 0;
                 m_LastCleanEvidenceUs = 0;
             }
-            else if (!holdProtection) {
+            else if (!holdProtection && s.absorbable && windowAbsorbable) {
                 m_CleanEvidenceUs = std::min<uint64_t>(
                     hold, m_CleanEvidenceUs + std::min<uint64_t>(actual, 100000));
                 m_LastCleanEvidenceUs = s.submitted;
@@ -245,7 +320,7 @@ public:
         update.cooldownRemainingUs = m_LastAttack ?
             remaining(s.submitted - m_LastAttack, 250000) : 0;
         update.action = pressureHolds ? Action::CurrentPressure :
-            historyHolds ? Action::HistoryHold : Action::RecoveryHold;
+            (targetAllowsHold && historyHolds) ? Action::HistoryHold : Action::RecoveryHold;
         const bool grow = currentPressure && (!severityWeighted || belowTarget);
         // Revision 1 mistook every slow frame for sustained overload. A
         // jitter buffer can cover a transient dependency stall when subsequent
@@ -256,7 +331,7 @@ public:
         if (grow && freshError && delayedAbsorbable && lateness &&
                 (!m_LastAttack || s.submitted - m_LastAttack >= 250000)) {
             const auto excess = severityWeighted ?
-                uint64_t(std::ceil(std::min(250.0, std::max(0.0, excessUs - allowedLoss * intended)))) :
+                uint64_t(std::ceil(std::min(250.0, std::max(0.0, bufferExcessUs - allowedLoss * intended)))) :
                 (total - samples * toleranceUs + samples - 1) / samples;
             const auto freshExcess = severityWeighted ? error - toleranceUs : error;
             const auto increase = std::min({uint64_t(250), excess, lateness,
@@ -286,8 +361,26 @@ public:
             m_ReleaseFraction += std::min<uint64_t>(actual, 100000) * releaseRate;
             const auto release = m_ReleaseFraction / 1000000;
             m_ReleaseFraction %= 1000000;
-            m_Target -= std::min(m_Target - minimum, release);
-            update.action = m_Target == minimum ? Action::Minimum : Action::Release;
+            const auto candidate = m_Target - std::min(m_Target - minimum, release);
+            bool allowed = true;
+            if (absorbedJitterRelease && candidate < m_Target) {
+                m_Stats.inputCandidateUs = candidate;
+                m_Stats.inputEvidenceUs = m_Input.coverage();
+                if (m_Input.qualified(s.submitted)) {
+                    m_Stats.inputCurrentLoss = m_Input.loss(m_Target, toleranceUs);
+                    m_Stats.inputCandidateLoss = m_Input.loss(candidate, toleranceUs);
+                    // Existing loss is not new shrink risk. This permits equal-
+                    // risk release through a flat/constant-lateness region.
+                    allowed = m_Stats.inputCandidateLoss <=
+                        std::max(allowedLoss, m_Stats.inputCurrentLoss) + 1e-12;
+                    if (allowed) ++m_Stats.inputReleaseAllowed;
+                    else ++m_Stats.inputReleaseHeld;
+                } else ++m_Stats.inputReleaseUnknown;
+            }
+            if (allowed) m_Target = candidate;
+            // Do not bank rejected release into a later large downward step.
+            update.action = !allowed ? Action::AbsorbedJitterHold :
+                m_Target == minimum ? Action::Minimum : Action::Release;
         }
         else if (grow) {
             update.action = !delayedAbsorbable ? Action::NotAbsorbable :
@@ -313,7 +406,23 @@ public:
         m_ReleaseFraction = 0;
     }
     Stats stats() const { return m_Stats; }
+    // Remove scored time from sinceUs through the current bucket, as if it
+    // were a gap. Used for lost-cause spans, where interval loss reflects a
+    // client failing wholesale rather than the smoothness a buffer controls.
+    void excludeScoreSince(uint64_t sinceUs) {
+        if (!m_ScoreValid) return;
+        const uint64_t oldest = m_ScoreTick >= m_ScoreWindow ? m_ScoreTick - m_ScoreWindow + 1 : 0;
+        for (uint64_t t = std::max(sinceUs / ScoreBucketUs, oldest); t <= m_ScoreTick; ++t) {
+            const size_t index = t % m_Score.size();
+            if (m_Score[index].tick != t) continue;
+            const ScoreBucket before = m_Score[index];
+            m_Score[index] = ScoreBucket{t};
+            scoreChanged(index, before);
+        }
+        updateScore(m_ScoreTick * ScoreBucketUs, m_Stats.scoreWindowUs);
+    }
     void breakSequence() {
+        m_Input.reset();
         m_Window = {}; m_First = m_ReleaseFraction = m_SequenceSamples = 0; m_HavePrevious = false;
         m_Stats.averageErrorUs = 0; m_Stats.averageValid = false;
         m_Stats.calibrationCoverageUs = m_Stats.calibrationSamples = 0;
@@ -329,18 +438,90 @@ private:
     struct ScoreBucket {
         uint64_t tick = 0, evaluated = 0, failed = 0;
         double weightedLoss = 0;
+        uint64_t bufferFailed = 0;
+        double bufferWeightedLoss = 0;
     };
-    void updateScore(uint64_t at, uint64_t windowUs) {
-        m_Stats.evaluatedUs = m_Stats.failedUs = 0;
-        m_Stats.weightedLossUs = 0;
-        const uint64_t windowBuckets = std::clamp<uint64_t>(
-            (windowUs + ScoreBucketUs - 1) / ScoreBucketUs,
-            1, MaximumScoreBuckets);
+    bool scoreActive(const ScoreBucket& b, uint64_t tick, uint64_t window) const {
+        return tick >= b.tick && tick - b.tick < window;
+    }
+    void addScore(const ScoreBucket& b) {
+        m_Stats.evaluatedUs += b.evaluated;
+        m_Stats.failedUs += b.failed;
+        m_Stats.bufferFailedUs += b.bufferFailed;
+    }
+    void removeScore(const ScoreBucket& b) {
+        m_Stats.evaluatedUs -= b.evaluated;
+        m_Stats.failedUs -= b.failed;
+        m_Stats.bufferFailedUs -= b.bufferFailed;
+    }
+    void prepareScore(uint64_t at, uint64_t windowUs) {
+        const uint64_t window = std::clamp<uint64_t>(
+            (windowUs + ScoreBucketUs - 1) / ScoreBucketUs, 1, MaximumScoreBuckets);
         const uint64_t tick = at / ScoreBucketUs;
-        for (const auto& b : m_Score) {
-            if (tick >= b.tick && tick - b.tick < windowBuckets) {
-                m_Stats.evaluatedUs += b.evaluated; m_Stats.failedUs += b.failed;
+        if (!m_ScoreValid || window != m_ScoreWindow || tick < m_ScoreTick ||
+                tick - m_ScoreTick >= window) {
+            m_Stats.evaluatedUs = m_Stats.failedUs = m_Stats.bufferFailedUs = 0;
+            for (const auto& b : m_Score) if (scoreActive(b, tick, window)) addScore(b);
+        }
+        else if (tick != m_ScoreTick) {
+            // A reversed historical clock can leave future buckets in the ring.
+            // Re-add them when they become visible again, as the full scan did.
+            if (tick >= window) {
+                const uint64_t first = m_ScoreTick >= window ? m_ScoreTick - window + 1 : 0;
+                for (uint64_t t = first; t <= tick - window; ++t) {
+                    const auto& b = m_Score[t % m_Score.size()];
+                    if (b.tick == t) removeScore(b);
+                }
+            }
+            for (uint64_t t = m_ScoreTick + 1; t <= tick; ++t) {
+                const auto& b = m_Score[t % m_Score.size()];
+                if (b.tick == t) addScore(b);
+            }
+        }
+        m_ScoreValid = true; m_ScoreTick = tick; m_ScoreWindow = window;
+    }
+    void scoreChanged(size_t index, const ScoreBucket& before) {
+        if (scoreActive(before, m_ScoreTick, m_ScoreWindow)) removeScore(before);
+        const auto& after = m_Score[index];
+        if (scoreActive(after, m_ScoreTick, m_ScoreWindow)) addScore(after);
+        const uint64_t bit = uint64_t(1) << (index % 64);
+        auto& word = m_WeightedScoreBits[index / 64];
+        const bool was = (word & bit) != 0;
+        const bool now = after.weightedLoss != 0 || after.bufferWeightedLoss != 0;
+        if (now) word |= bit; else word &= ~bit;
+        if (was != now) m_WeightedScoreCount += now ? 1 : size_t(-1);
+    }
+    static unsigned firstScoreBit(uint64_t word) {
+        unsigned n = 0;
+        if (!(word & 0xffffffffULL)) { n += 32; word >>= 32; }
+        if (!(word & 0xffffULL)) { n += 16; word >>= 16; }
+        if (!(word & 0xffULL)) { n += 8; word >>= 8; }
+        if (!(word & 0xfULL)) { n += 4; word >>= 4; }
+        if (!(word & 0x3ULL)) { n += 2; word >>= 2; }
+        if (!(word & 0x1ULL)) ++n;
+        return n;
+    }
+    void updateScore(uint64_t at, uint64_t windowUs) {
+        prepareScore(at, windowUs);
+        m_Stats.weightedLossUs = m_Stats.bufferWeightedLossUs = 0;
+        const auto fold = [&](const ScoreBucket& b) {
+            if (scoreActive(b, m_ScoreTick, m_ScoreWindow)) {
                 m_Stats.weightedLossUs += b.weightedLoss;
+                m_Stats.bufferWeightedLossUs += b.bufferWeightedLoss;
+            }
+        };
+        // Keep the exact old physical-index floating-point addition order.
+        // Skipping positive zero changes no bits; dense scores use the old scan.
+        if (m_WeightedScoreCount > MaximumScoreBuckets / 4) {
+            for (const auto& b : m_Score) fold(b);
+        }
+        else {
+            for (size_t i = 0; i < m_WeightedScoreBits.size(); ++i) {
+                uint64_t bits = m_WeightedScoreBits[i];
+                while (bits) {
+                    fold(m_Score[i * 64 + firstScoreBit(bits)]);
+                    bits &= bits - 1;
+                }
             }
         }
     }
@@ -348,6 +529,11 @@ private:
     // Keep the long score history off the controller's stack. The controller
     // is instantiated in several independent workers and test fixtures.
     std::vector<ScoreBucket> m_Score = std::vector<ScoreBucket>(MaximumScoreBuckets);
+    std::array<uint64_t, (MaximumScoreBuckets + 63) / 64> m_WeightedScoreBits{};
+    size_t m_WeightedScoreCount = 0;
+    uint64_t m_ScoreTick = 0, m_ScoreWindow = 0;
+    bool m_ScoreValid = false;
+    AbsorbedJitter m_Input;
     Sample m_Previous;
     Stats m_Stats;
     uint64_t m_Target = 0, m_First = 0, m_LastAttack = 0, m_LastPressure = 0, m_ReleaseFraction = 0;

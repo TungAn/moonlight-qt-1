@@ -1,6 +1,7 @@
 #include "plvk.h"
 #include "plvkpresentation.h"
 #include "plvkswapchain.h"
+#include "../videothreadpriority.h"
 
 #include "streaming/session.h"
 #include "streaming/streamutils.h"
@@ -1401,12 +1402,7 @@ bool PlVkRenderer::acquirePendingSwapchainFrame(
         if (m_DeferredTemplateValid) {
             m_DeferredTemplate = m_SwapchainFrame;
             m_DeferredTemplate.fbo = nullptr;
-            m_DeferredTextureParams = {};
-            m_DeferredTextureParams.w = fbo->params.w;
-            m_DeferredTextureParams.h = fbo->params.h;
-            m_DeferredTextureParams.format = fbo->params.format;
-            m_DeferredTextureParams.renderable = true;
-            m_DeferredTextureParams.blit_src = true;
+            m_DeferredTextureParams = plVkOffscreenRenderTargetParams(fbo);
         }
     }
 #endif
@@ -1606,7 +1602,11 @@ void PlVkRenderer::retireCompletedVrrSourceFrames()
             const auto now = LiGetMicroseconds();
             m_GpuTrace->record({"source_retired", frame->pts, frame->outputUs, frame->lastBusyUs, now});
         }
-        pl_unmap_avframe(m_Vulkan->gpu, &frame->frame);
+        if (frame->poolOwner) {
+            av_frame_free(&frame->poolOwner);
+        } else {
+            pl_unmap_avframe(m_Vulkan->gpu, &frame->frame);
+        }
         frame = m_VrrRetainedSourceFrames.erase(frame);
     }
 }
@@ -1667,11 +1667,11 @@ bool PlVkRenderer::ensureVrrSourceRetentionSlot()
     return true;
 }
 
-void PlVkRenderer::retainVrrSourceFrame(pl_frame& frame)
+void PlVkRenderer::retainVrrSourceFrame(pl_frame& frame, AVFrame* owner)
 {
     SDL_assert(m_VrrRetainedSourceFrames.size() <
                kVulkanRetainedSourceFrameLimit);
-    m_VrrRetainedSourceFrames.push_back({frame, m_GpuTracePts, m_GpuTraceOutputUs, 0});
+    m_VrrRetainedSourceFrames.push_back({frame, m_GpuTracePts, m_GpuTraceOutputUs, 0, owner});
     if (m_GpuTrace) {
         const auto now = LiGetMicroseconds();
         m_GpuTrace->record({"source_retained", m_GpuTracePts, m_GpuTraceOutputUs,
@@ -1703,7 +1703,11 @@ void PlVkRenderer::releaseAllVrrSourceFrames()
             const auto now = LiGetMicroseconds();
             m_GpuTrace->record({"source_teardown", frame.pts, frame.outputUs, now, now});
         }
-        pl_unmap_avframe(m_Vulkan->gpu, &frame.frame);
+        if (frame.poolOwner) {
+            av_frame_free(&frame.poolOwner);
+        } else {
+            pl_unmap_avframe(m_Vulkan->gpu, &frame.frame);
+        }
     }
     m_VrrRetainedSourceFrames.clear();
 }
@@ -1850,18 +1854,13 @@ void PlVkRenderer::updatePreparationTarget()
     if (!m_PreparationTargetValid) return;
     m_PreparationTarget = m_SwapchainFrame;
     m_PreparationTarget.fbo = nullptr; // Never hand a swapchain texture across threads.
-    m_PreparationTextureParams = {};
-    m_PreparationTextureParams.w = texture->params.w;
-    m_PreparationTextureParams.h = texture->params.h;
-    m_PreparationTextureParams.format = texture->params.format;
-    m_PreparationTextureParams.renderable = true;
-    m_PreparationTextureParams.blit_src = true;
+    m_PreparationTextureParams = plVkOffscreenRenderTargetParams(texture);
 }
 
 int PlVkRenderer::preparationThreadProc(void* opaque)
 {
     auto self = static_cast<PlVkRenderer*>(opaque);
-    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+    const VideoThreadPriority priority("VRRPrepare");
     for (;;) {
         std::shared_ptr<PreparedImage> image;
         {
@@ -2646,6 +2645,22 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
 
     pl_frame_from_swapchain(&targetFrame, &m_SwapchainFrame);
 
+#if defined(HAVE_PYROWAVE) && defined(Q_OS_LINUX)
+    if (!m_LoggedPyroWaveRenderFormat && m_PyroWavePool &&
+            m_PyroWavePool->ownsFrame(frame) && m_SwapchainFrame.fbo) {
+        const auto& output = m_SwapchainFrame.fbo->params;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "PyroWave render formats: source %s %dx%d primaries=%d transfer=%d; "
+                    "output %s %dx%d depth=%d primaries=%d transfer=%d",
+                    av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)),
+                    frame->width, frame->height, int(mappedFrame.color.primaries),
+                    int(mappedFrame.color.transfer), output.format->name, output.w, output.h,
+                    targetFrame.repr.bits.color_depth, int(targetFrame.color.primaries),
+                    int(targetFrame.color.transfer));
+        m_LoggedPyroWaveRenderFormat = true;
+    }
+#endif
+
 #ifndef PLVK_USE_EARLY_RENDER_TO_WAIT
     // For PLVK_USE_EARLY_RENDER_TO_WAIT, we already timed our early render in waitToRender()
     beginRenderTiming();
@@ -2690,6 +2705,19 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
             retainVrrSourceFrame(mappedFrame);
             m_VrrCurrentSourceRetained = true;
         }
+#ifdef HAVE_PYROWAVE
+        else if (frame && m_PyroWavePool && m_PyroWavePool->ownsFrame(frame)) {
+            // PyroWave uses planar software descriptors for GPU-owned planes.
+            // Retain its pool reference until the recorded reads retire, just
+            // as libplacebo's hardware mapping retains an imported VA surface.
+            // Presentation still waits on Vulkan's render-complete semaphore.
+            // Allocation failure keeps the synchronous completion fallback.
+            if (AVFrame* owner = av_frame_clone(frame)) {
+                retainVrrSourceFrame(mappedFrame, owner);
+                m_VrrCurrentSourceRetained = true;
+            }
+        }
+#endif
 #endif
         goto UnmapExit;
     }

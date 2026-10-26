@@ -9,6 +9,31 @@ Check its source baseline against current code and update affected sections
 when behavior changes; historical comments and replay defaults are not proof
 of the active production policy.
 
+## Interpret VRR timing against the actual source cadence
+
+VRR follows the frames the host actually produces; the requested stream FPS and
+display maximum are not a promise of constant frame delivery. A 51 ms interval
+can be entirely normal when source FPS drops, a game is inactive or not visible,
+or the desktop is idle. Do not label a large submission, display, first-packet,
+or sender interval a stall, hitch, missed deadline, or malfunction merely because
+it exceeds the period at the requested FPS or an arbitrary threshold.
+
+Before attributing a timing disturbance, establish the workload and the source
+cadence for that same span using frame identities, source/RTP timestamps, and
+contemporaneous rate information. Separate legitimate lower-rate output and
+rate transitions from delivery or presentation that fails to follow the source.
+If workload or source evidence is unavailable, state that the cause is unresolved;
+do not infer a host, network, or client defect from the gap alone. In particular,
+a long gap before the next frame's first packet does not by itself establish an
+upstream stall: the host may simply have produced no new frame during that span.
+
+On native scheduled presentation, the blue client-submission line measures CPU
+enqueue spacing, while magenta measures OS-reported display timing. Uneven early
+enqueues can still produce correct display cadence. Diagnose lateness against
+the matching frame's appropriate deadline and actual source cadence; neither a
+jagged blue line nor a raw maximum interval proves visible stutter. OS display
+reports also require identity matching and are not optical screen measurements.
+
 ## ChaseShare Windows build
 
 The gaming build is an unsigned Windows x64 release. The canonical share is:
@@ -257,6 +282,7 @@ Run all deterministic tests before deploying a VRR-related change or creating
 a new published release:
 
 ```bat
+vrr\release\tst_vrrbufferregressions.exe
 vrr\release\tst_vrrtimingcontroller.exe
 vrr\release\tst_vrrratepolicy.exe
 vrr\release\tst_vrrpacingworker.exe
@@ -267,8 +293,21 @@ vrr\release\vrrreplay.exe --help
 ```
 
 Finish all pacing, controller, replay, and test-source edits before this build.
-If any such source is edited afterward, run `nmake` again and rerun all seven
+If any such source is edited afterward, run `nmake` again and rerun all eight
 checks. Do not assume a successful application build rebuilt the diagnostics.
+
+`tst_vrrbufferregressions` is the adaptive-buffer regression gate. It builds
+every controller exactly as a live session does and pins no policy revision,
+so run it after any buffer, rate-layer, catch-up, smoothing or ceiling
+replacement change, not only before deployment; it takes about 9 s. Its
+`versus-fixed-refresh` scenarios fail when VRR at the display ceiling shows
+more visible stutter than the fixed-refresh pacer would on the same input.
+`KNOWN` lines are open regressions the
+shipped policy already has. They do not fail the gate. A `FAIL` line is a new
+regression, and `FIXED KNOWN REGRESSION` means its `g_Known` entry must be
+deleted. Build new controller-level tests of live behavior through
+`tests/vrr/vrrproductionsession.h`, not a default `VrrSessionConfig`. See
+`tests/vrr/README.md` for the contract map.
 
 The test executables need the deployed runtime DLLs and Qt on `PATH`. Run them
 directly from PowerShell and check `$LASTEXITCODE` after each executable. Exit
@@ -281,6 +320,7 @@ $qtBin = "C:\Users\Chase\sources\.tools\Qt\6.11.1\msvc2022_64\bin"
 $env:Path = "$deploy;$qtBin;$env:Path"
 
 $tests = @(
+    "tst_vrrbufferregressions.exe",
     "tst_vrrtimingcontroller.exe",
     "tst_vrrratepolicy.exe",
     "tst_vrrpacingworker.exe",
@@ -390,10 +430,15 @@ batch:
 The `session-policy` row is the production policy the capture would run
 under today. Ignore any scenario the table marks `saturated`: its worker fell
 behind the source cadence and the fixed-admission replay cannot shed frames,
-so its latency is meaningless. Host capture stalls (sender intervals over
-25 ms) are excluded from the hitch count by design; report them separately
-from the trace's RTP timestamps when the user reports visible stutter, because
-they are usually the cause and the pacer cannot fix them.
+so its latency is meaningless. Sender intervals over 25 ms are excluded from
+the hitch count by design. That threshold is a metric exclusion, not proof of a
+host capture stall. Report long source intervals separately from the trace's RTP
+timestamps, and interpret them against the workload and actual source cadence
+as required above. Idle output, inactive games, lower FPS, and rate transitions
+can legitimately produce those intervals. Attribute an abnormal source stall
+only when evidence establishes that the source should have continued producing
+frames at the relevant cadence; the pacer cannot create frames the host did not
+produce.
 
 Keep the untouched baseline and candidate results in separately named files.
 Evaluate cadence residual p95/p99, jerk p95/p99, decode-to-submission mean and

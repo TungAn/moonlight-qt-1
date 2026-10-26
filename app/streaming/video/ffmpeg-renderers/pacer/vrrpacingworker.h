@@ -29,6 +29,9 @@ class VrrTimingController;
 // unpaced Pacer behavior never enter it.
 class VrrPacingWorker {
 public:
+    // Resolve the same production policy for cache identity and worker startup.
+    static VrrSessionConfig resolvedInputConfig(VrrSessionConfig config);
+
     VrrPacingWorker(IVrrFramePresenter* presenter,
                     const VrrSessionConfig& config,
                     PacerTelemetry* telemetry);
@@ -38,6 +41,17 @@ public:
     VrrPacingWorker& operator=(const VrrPacingWorker&) = delete;
 
     bool start();
+#ifdef VRR_WORKER_REPLAY
+    friend class VrrWorkerReplayHarness;
+    // Offline executable only. No hook, branch, lock, or callback exists in
+    // production builds. Called between iterations, outside queue locks.
+    void (*replayBeforeDequeue)(void*, bool) = nullptr;
+    void* replayContext = nullptr;
+    std::atomic_uint64_t replayTraceConsumed { 0 };
+    std::atomic_bool replayStartReady { false };
+    // Written during closeTrace(), after flushing/closing the required artifact.
+    bool* replayTraceResult = nullptr;
+#endif
 
     void submit(PacedFrame&& frame);
 
@@ -73,6 +87,12 @@ private:
         PacedFrame frame;
         FrameTraceContext trace;
         std::shared_ptr<VrrPreparedFrame> preparation;
+        // A replacement proof may synchronize decode before the next loop.
+        // Preserve its service and observation boundary instead of observing
+        // that already-completed GPU work again after the current frame.
+        VrrDecodeReadiness reservedReadiness;
+        uint64_t reservedReadinessObservedUs = 0;
+        bool reservedReadinessValid = false;
 
         QueuedFrame() = default;
         QueuedFrame(QueuedFrame&&) = default;
@@ -86,6 +106,15 @@ private:
     };
 
     struct FrameTelemetry {
+        bool bufferAuditValid = false;
+        VrrBufferAuditSnapshot bufferBefore;
+        int64_t trajectorySuccessorFrame = -1;
+        uint64_t trajectorySuccessorProof = 0;
+        bool trajectoryResyncDropped = false;
+        bool trajectoryResyncDeferred = false;
+        bool inputNetworkBufferMiss = false;
+        bool inputDecodeBufferMiss = false;
+        uint64_t inputBufferMissObservationUs = 0;
         bool preparedAhead = false;
         VrrPreparedFrame::Timing preparationStage;
         uint64_t decisionTimeUs = 0;
@@ -106,6 +135,9 @@ private:
         uint64_t preparationEndUs = 0;
         uint64_t preparationDurationUs = 0;
         uint64_t decodeSyncWaitUs = 0;
+        bool decodeReadinessObserved = false;
+        bool nativeScheduledPresentation = false;
+        uint64_t schedulingBoundaryUs = 0;
         bool prepareTimingValid = false;
         uint64_t prepareDecodeSyncUs = 0;
         uint64_t prepareAcquireUs = 0;
@@ -144,6 +176,7 @@ private:
     struct TraceRow {
         int frameNumber = 0;
         uint32_t rtpTimestamp = 0;
+        uint32_t lostPackets = 0;
         bool timestampValid = false;
         uint64_t decodeCompleteUs = 0;
         uint64_t decoderOutputUs = 0;
@@ -160,6 +193,7 @@ private:
         VrrTimingDecision decision;
         VrrTimingDiagnostics diagnostics;
         Vrr13::IntervalBuffer::Stats bufferStats;
+        VrrBufferAuditSnapshot bufferAfter;
         VrrPresentFeedback feedback;
         FrameTelemetry telemetry;
         size_t completionQueueDepth = 0;
@@ -179,6 +213,8 @@ private:
     int run();
     bool dequeueFrame(QueuedFrame& frame, bool& queueDiscontinuity);
     bool hasQueuedFrame();
+    bool reserveReadySuccessor(bool preparedCurrent, QueuedFrame& frame,
+                               bool& queueDiscontinuity, unsigned waitMs = 0);
     void discardQueuedFrames(bool countDrops,
                              TraceDisposition disposition);
     uint32_t consumeWindowStateNotifications();
@@ -214,6 +250,9 @@ private:
     PacerTelemetry* m_Telemetry;
     VrrSessionConfig m_Config;
     bool m_CanLatchPresentation = false;
+    const bool m_NativeSynchronizedPresentation;
+    const bool m_NativeScheduledPresentation;
+    uint64_t m_LastActualSubmissionUs = 0;
     bool m_WorkerStarted = false;
     std::atomic_bool m_CalibrationInvalidated { false };
     QByteArray m_InitialPlayoutProfile;
@@ -259,6 +298,8 @@ private:
     bool m_RebaseOnNextFrame = false;
     uint32_t m_RebaseOnNextFrameFlags = 0;
     bool m_DeepTraceEnabled = false;
+    bool m_BufferAuditEnabled = false;
+    VrrTimingParameters m_TraceParameters;
     std::FILE* m_TraceFile = nullptr;
     SDL_Thread* m_TraceThread = nullptr;
     std::unique_ptr<Vrr13::TraceQueue<TraceRow, 8192>> m_TraceQueue;

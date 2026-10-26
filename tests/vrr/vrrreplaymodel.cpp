@@ -24,11 +24,26 @@ bool vrrDecodeReadinessOrderValid(uint64_t decoderOutputUs, uint64_t readyUs,
                                   uint64_t decisionUs, uint64_t decodeWaitUs,
                                   bool decisionValid,
                                   bool readinessExcludesQueue,
-                                  bool readinessUsesPostWaitClock)
+                                  bool readinessUsesPostWaitClock,
+                                  bool completionObserved,
+                                  bool readinessStateAvailable)
 {
     if (!decoderOutputUs || decoderOutputUs > arrivalUs || readyUs < decoderOutputUs)
         return false;
     if (decisionValid && readyUs > decisionUs) return false;
+    if (completionObserved) {
+        return decisionValid && dequeueUs >= arrivalUs && readyUs >= dequeueUs &&
+            decodeWaitUs <= readyUs - dequeueUs;
+    }
+    if (readinessStateAvailable && readinessUsesPostWaitClock && decodeWaitUs != 0 &&
+            readyUs == decoderOutputUs) {
+        // A failed wait is service time, not proof that decoding completed.
+        // Current traces explicitly distinguish that state. Retain the CPU
+        // output boundary and audit the wait against the full worker interval;
+        // historical captures without this field keep their stricter rule.
+        return decisionValid && dequeueUs >= arrivalUs && decisionUs >= dequeueUs &&
+            decodeWaitUs <= decisionUs - dequeueUs;
+    }
     if (readinessUsesPostWaitClock) {
         return decisionValid ?
             (decodeWaitUs > 200 ?
@@ -1279,6 +1294,47 @@ VrrPresenterSubmissionAudit evaluateVrrPresenterSubmission(
             result.expectedPresenterTimeUsed &&
         recordedSubmissionBoundaryUs ==
             result.expectedSubmissionBoundaryUs;
+    return result;
+}
+
+VrrNativeSchedulingAudit evaluateVrrNativeScheduling(
+    bool scheduledLifecycle, bool presented, bool cancelled,
+    uint64_t enqueueUs, uint64_t nativeTargetUs,
+    uint64_t recordedSchedulingBoundaryUs)
+{
+    VrrNativeSchedulingAudit result;
+    const bool acceptedScheduledTarget =
+        scheduledLifecycle && presented && !cancelled;
+    result.expectedSchedulingBoundaryUs = !presented ? 0 :
+        (acceptedScheduledTarget ? std::max(enqueueUs, nativeTargetUs) : enqueueUs);
+    result.relationshipValid =
+        (!acceptedScheduledTarget || nativeTargetUs != 0) &&
+        (acceptedScheduledTarget || nativeTargetUs == 0) &&
+        recordedSchedulingBoundaryUs == result.expectedSchedulingBoundaryUs;
+    return result;
+}
+
+VrrNativeTargetClockAudit evaluateVrrNativeTargetClock(
+    uint64_t requestedTargetUs, uint64_t target100ns,
+    uint64_t reference100ns, uint64_t clockBeforeUs,
+    uint64_t clockAfterUs, uint64_t uncertaintyUs)
+{
+    VrrNativeTargetClockAudit result;
+    if (reference100ns == 0 || clockBeforeUs == 0 ||
+            clockAfterUs < clockBeforeUs ||
+            clockAfterUs - clockBeforeUs > 500) return result;
+    const uint64_t spanUs = clockAfterUs - clockBeforeUs;
+    const uint64_t referenceUs = clockBeforeUs + spanUs / 2;
+    result.expectedUncertaintyUs = (spanUs + 1) / 2 + 1;
+    result.expectedTarget100ns = reference100ns;
+    if (requestedTargetUs > referenceUs) {
+        const uint64_t futureUs = requestedTargetUs - referenceUs;
+        const uint64_t maximum = (std::numeric_limits<uint64_t>::max)();
+        if (futureUs > (maximum - reference100ns) / 10) return result;
+        result.expectedTarget100ns += futureUs * 10;
+    }
+    result.relationshipValid = target100ns == result.expectedTarget100ns &&
+        uncertaintyUs == result.expectedUncertaintyUs;
     return result;
 }
 

@@ -1,4 +1,5 @@
 #include "nvcomputer.h"
+#include "poweractions.h"
 #include "framelimitercapabilities.h"
 #include "nvapp.h"
 #include "settings/compatfetcher.h"
@@ -159,6 +160,9 @@ NvComputer::NvComputer(NvHTTP& http, QString serverInfo)
     bool validLink = false;
     const auto hostLink = NvHTTP::getXmlString(serverInfo, "PyroWaveHostLinkMbps").toUInt(&validLink);
     this->pyrowaveHostLinkMbps = validLink && hostLink <= 400000 ? hostLink : 0;
+    bool validCompressionVersion = false;
+    const auto compressionVersion = NvHTTP::getXmlString(serverInfo, "PyroWaveCompressionVersion").toUInt(&validCompressionVersion);
+    this->pyrowaveCompressionVersion = validCompressionVersion ? compressionVersion : 0;
 
     QString maxLumaPixelsHEVC = NvHTTP::getXmlString(serverInfo, "MaxLumaPixelsHEVC");
     if (!maxLumaPixelsHEVC.isEmpty()) {
@@ -167,6 +171,8 @@ NvComputer::NvComputer(NvHTTP& http, QString serverInfo)
     else {
         this->maxLumaPixelsHEVC = 0;
     }
+
+    this->sleepActionSupportedAndAllowed = PowerActions::advertised(serverInfo);
 
     const auto limiter = FrameLimiterCapabilities::fromServerInfo(serverInfo);
     this->frameLimiterSupported = limiter.supported;
@@ -572,6 +578,8 @@ bool NvComputer::update(const NvComputer& that)
     ASSIGN_IF_CHANGED(pairState);
     ASSIGN_IF_CHANGED(serverCodecModeSupport);
     ASSIGN_IF_CHANGED(pyrowaveHostLinkMbps);
+    ASSIGN_IF_CHANGED(pyrowaveCompressionVersion);
+    ASSIGN_IF_CHANGED(sleepActionSupportedAndAllowed);
     ASSIGN_IF_CHANGED(frameLimiterSupported);
     ASSIGN_IF_CHANGED(frameLimiterEnabled);
     ASSIGN_IF_CHANGED(virtualDisplayFrameLimiterEnabled);

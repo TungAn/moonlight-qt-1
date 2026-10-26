@@ -2,7 +2,72 @@
 
 #include "vrrreplayconfig.h"
 
+#include <algorithm>
 #include <cstdint>
+
+// A resync drop reserves the image processed on the next worker iteration.
+// Join that claim to its later lifecycle row instead of trusting a forward ID
+// and an enum alone. Terminal stop/suspend rows retain identity but may omit
+// preparation telemetry; they do not imply that an image was displayed.
+struct VrrTrajectorySuccessorAudit {
+    bool pending = false;
+    int64_t frame = -1;
+    uint64_t proof = 0;
+    uint64_t reservedAtUs = 0;
+
+    bool expect(int64_t droppedFrame, int64_t successorFrame,
+                uint64_t successorProof, uint64_t atUs)
+    {
+        if (pending || successorFrame <= droppedFrame ||
+                (successorProof != 1 && successorProof != 2) || !atUs)
+            return false;
+        pending = true;
+        frame = successorFrame;
+        proof = successorProof;
+        reservedAtUs = atUs;
+        return true;
+    }
+
+    bool observe(int64_t actualFrame, bool decisionValid, bool terminalDiscard,
+                 bool preparedAhead, bool decodeObserved,
+                 uint64_t decodeCompleteUs, uint64_t preparedReadyUs,
+                 uint64_t dequeueUs = 0, uint64_t decoderOutputUs = 0)
+    {
+        if (!pending) return true;
+        if (actualFrame != frame) {
+            // Other queued images may be terminally discarded by admission
+            // or suspension. A scheduled image cannot pass the reservation.
+            if (!decisionValid) return true;
+            pending = false;
+            return false;
+        }
+        pending = false;
+        if (terminalDiscard && !decisionValid) return true;
+        if (!decisionValid) return false;
+        if (proof == 1)
+            return preparedAhead && preparedReadyUs && preparedReadyUs <= reservedAtUs;
+        if (preparedAhead || !decodeCompleteUs) return false;
+        // A retained reservation wait has a dequeue boundary before the
+        // drop and must already have observed completion by then. An image
+        // declared complete on admission is dequeued next and may be checked
+        // again later: that later upper bound cannot disprove earlier readiness.
+        if (dequeueUs > reservedAtUs)
+            return decoderOutputUs && decoderOutputUs <= reservedAtUs &&
+                (decodeObserved || decodeCompleteUs == decoderOutputUs);
+        return decodeObserved && decodeCompleteUs <= reservedAtUs;
+    }
+
+    bool complete() const { return !pending; }
+};
+
+// Use the captured admission policy, including the historical default when
+// older traces omit the override. Match VrrTimingController::queuedFrameCapacity().
+inline uint64_t vrrRecordedWorkerQueueCapacity(uint64_t configuredFrames)
+{
+    return configuredFrames != 0 ?
+        std::min<uint64_t>(configuredFrames, VrrLargestQueuedFrames) :
+        VrrMaximumQueuedFrames;
+}
 
 // Historical captures omit the permission field and therefore keep the old
 // tearing-permitted native contract. The A/B option changes only permission;
@@ -35,7 +100,9 @@ bool vrrDecodeReadinessOrderValid(uint64_t decoderOutputUs, uint64_t readyUs,
                                   uint64_t decisionUs, uint64_t decodeWaitUs,
                                   bool decisionValid,
                                   bool readinessExcludesQueue = false,
-                                  bool readinessUsesPostWaitClock = false);
+                                  bool readinessUsesPostWaitClock = false,
+                                  bool completionObserved = false,
+                                  bool readinessStateAvailable = false);
 
 bool vrrPreparedReadinessOrderValid(uint64_t outputUs, uint64_t arrivalUs,
     uint64_t dequeueUs, uint64_t decisionUs, uint64_t decodeCompleteUs,
@@ -254,6 +321,20 @@ struct VrrPresenterSubmissionAudit {
     bool relationshipValid = false;
 };
 
+// Native scheduling changes the controller's cadence boundary without changing
+// the measured CPU enqueue timestamp. Missing historical fields select the
+// ordinary enqueue boundary; accepted future targets must be audited separately.
+struct VrrNativeSchedulingAudit {
+    uint64_t expectedSchedulingBoundaryUs = 0;
+    bool relationshipValid = false;
+};
+
+struct VrrNativeTargetClockAudit {
+    uint64_t expectedTarget100ns = 0;
+    uint64_t expectedUncertaintyUs = 0;
+    bool relationshipValid = false;
+};
+
 struct VrrSpacingCorrectionAudit {
     bool relationshipValid = false;
 };
@@ -457,6 +538,16 @@ VrrPresenterSubmissionAudit evaluateVrrPresenterSubmission(
     uint64_t operationStartUs, uint64_t operationEndUs,
     bool recordedPresenterTimeUsed,
     uint64_t recordedSubmissionBoundaryUs);
+
+VrrNativeSchedulingAudit evaluateVrrNativeScheduling(
+    bool scheduledLifecycle, bool presented, bool cancelled,
+    uint64_t enqueueUs, uint64_t nativeTargetUs,
+    uint64_t recordedSchedulingBoundaryUs);
+
+VrrNativeTargetClockAudit evaluateVrrNativeTargetClock(
+    uint64_t requestedTargetUs, uint64_t target100ns,
+    uint64_t reference100ns, uint64_t clockBeforeUs,
+    uint64_t clockAfterUs, uint64_t uncertaintyUs);
 
 VrrSpacingCorrectionAudit evaluateVrrSpacingCorrection(
     bool normalPresentationLifecycle,
