@@ -1,0 +1,215 @@
+diff --git a/src/RtpVideoQueue.c b/src/RtpVideoQueue.c
+index 8172191..29620e9 100644
+--- a/src/RtpVideoQueue.c
++++ b/src/RtpVideoQueue.c
+@@ -54,8 +54,10 @@ static void purgeListEntries(PRTPV_QUEUE_LIST list) {
+ }
+ 
+ void RtpvCleanupQueue(PRTP_VIDEO_QUEUE queue) {
++    queue->earlyBlockDeadlineUs = 0;
+     purgeListEntries(&queue->pendingFecBlockList);
+     purgeListEntries(&queue->completedFecBlockList);
++    purgeListEntries(&queue->earlyBlockList);
+     queue->pendingFrameDeadlineUs = 0;
+     queue->pendingFrameDeadlinePrecise = false;
+     queue->onTimeDeadlineQueried = false;
+@@ -732,15 +734,140 @@ static bool hasCompletePyroWaveCriticalData(PRTP_VIDEO_QUEUE queue) {
+     return received == remaining;
+ }
+ 
++// Over Wi-Fi, a PyroWave frame's FEC blocks sometimes arrive out of order: all of
++// block 0 can land about a millisecond after the first packets of block 1. Instead
++// of dropping the frame, packets of a later block of the current frame are held
++// until the block the queue is waiting for completes, for at most
++// EARLY_BLOCK_HOLD_US after the first of them arrived.
++#define EARLY_BLOCK_HOLD_US 3000
++#define EARLY_BLOCK_MAX_PACKETS 1024
++
++static bool holdEarlyBlockPacket(PRTP_VIDEO_QUEUE queue, PRTPV_QUEUE_ENTRY entry, PRTP_PACKET packet,
++                                 int length, PNV_VIDEO_PACKET nvPacket) {
++    if (!(NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) ||
++            queue->earlyBlockList.count >= EARLY_BLOCK_MAX_PACKETS) {
++        return false;
++    }
++
++    if (queue->earlyBlockDeadlineUs == 0) {
++        queue->earlyBlockFirstUs = PltGetMicroseconds();
++        queue->earlyBlockDeadlineUs = queue->earlyBlockFirstUs + EARLY_BLOCK_HOLD_US;
++        queue->earlyBlockFrameNumber = queue->currentFrameNumber;
++    }
++
++    // RtpvAddPacket() converted these in place; restore the wire order for the replay
++    nvPacket->streamPacketIndex = LE32(nvPacket->streamPacketIndex);
++    nvPacket->frameIndex = LE32(nvPacket->frameIndex);
++    nvPacket->fecInfo = LE32(nvPacket->fecInfo);
++
++    entry->packet = packet;
++    entry->length = length;
++    entry->prev = NULL;
++    entry->next = NULL;
++    insertEntryIntoList(&queue->earlyBlockList, entry);
++    return true;
++}
++
++// Feeds the held packets back in once the block before them is complete
++static void replayEarlyBlockPackets(PRTP_VIDEO_QUEUE queue) {
++    if (queue->replayingEarlyBlocks) {
++        return;
++    }
++
++    if (queue->earlyBlockFrameNumber == queue->currentFrameNumber) {
++        Limelog("Recovered frame %d: FEC block %d arrived %d us after block %d\n",
++                queue->currentFrameNumber, queue->multiFecCurrentBlockNumber,
++                (int)(PltGetMicroseconds() - queue->earlyBlockFirstUs),
++                queue->multiFecCurrentBlockNumber + 1);
++    }
++
++    queue->replayingEarlyBlocks = true;
++    while (queue->earlyBlockList.count != 0 && queue->pendingFecBlockList.count == 0) {
++        PRTPV_QUEUE_ENTRY entry = queue->earlyBlockList.head;
++        uint32_t held = queue->earlyBlockList.count;
++
++        // Packets that are still early are held again, in arrival order
++        queue->earlyBlockList.head = NULL;
++        queue->earlyBlockList.tail = NULL;
++        queue->earlyBlockList.count = 0;
++        while (entry != NULL) {
++            PRTPV_QUEUE_ENTRY next = entry->next;
++            entry->prev = NULL;
++            entry->next = NULL;
++            if (RtpvAddPacket(queue, entry->packet, entry->length, entry) != RTPF_RET_QUEUED) {
++                free(entry->packet);
++            }
++            entry = next;
++        }
++
++        if (queue->earlyBlockList.count == held) {
++            break;
++        }
++    }
++    if (queue->earlyBlockList.count == 0) {
++        queue->earlyBlockDeadlineUs = 0;
++    }
++    queue->replayingEarlyBlocks = false;
++}
++
++static void expireEarlyBlockPackets(PRTP_VIDEO_QUEUE queue, uint64_t nowUs) {
++    // Packets held for a frame the queue has since moved past are dropped right away
++    bool stale = queue->earlyBlockFrameNumber != queue->currentFrameNumber;
++    if (queue->earlyBlockDeadlineUs == 0 || queue->replayingEarlyBlocks ||
++            (!stale && nowUs < queue->earlyBlockDeadlineUs)) {
++        return;
++    }
++
++    if (!stale) {
++        // Part of the awaited block may be here: deliver it with its missing packets
++        // zero-filled, as when the next block starts in order
++        if (queue->pendingFecBlockList.count != 0 && completeBlockWithLostPackets(queue, "late block deadline")) {
++            queue->multiFecCurrentBlockNumber++;
++            replayEarlyBlockPackets(queue);
++            return;
++        }
++
++        Limelog("Unrecoverable frame %d: FEC block %d did not arrive within %d us of block %d\n",
++                queue->currentFrameNumber, queue->multiFecCurrentBlockNumber + 1,
++                EARLY_BLOCK_HOLD_US, queue->multiFecCurrentBlockNumber + 2);
++        if (queue->pendingFecBlockList.count != 0) {
++            reportFinalFrameFecStatus(queue);
++        }
++        purgeListEntries(&queue->pendingFecBlockList);
++        purgeListEntries(&queue->completedFecBlockList);
++        if (!queue->reportedLostFrame) {
++            notifyFrameLost(queue->currentFrameNumber, false);
++        }
++        queue->currentFrameNumber++;
++        queue->multiFecCurrentBlockNumber = 0;
++        queue->reportedLostFrame = false;
++    }
++
++    purgeListEntries(&queue->earlyBlockList);
++    queue->earlyBlockDeadlineUs = 0;
++}
++
++static bool earlyBlockDeadlineFirst(PRTP_VIDEO_QUEUE queue) {
++    return queue->earlyBlockDeadlineUs != 0 &&
++        (queue->pendingFrameDeadlineUs == 0 || queue->earlyBlockDeadlineUs < queue->pendingFrameDeadlineUs);
++}
++
+ uint64_t RtpvGetPendingFrameDeadlineUs(PRTP_VIDEO_QUEUE queue) {
++    if (earlyBlockDeadlineFirst(queue)) {
++        return queue->earlyBlockDeadlineUs;
++    }
+     return queue->pendingFrameDeadlineUs;
+ }
+ 
+ bool RtpvPendingFrameDeadlineIsPrecise(PRTP_VIDEO_QUEUE queue) {
++    if (earlyBlockDeadlineFirst(queue)) {
++        return false;
++    }
+     return queue->pendingFrameDeadlineUs != 0 && queue->pendingFrameDeadlinePrecise;
+ }
+ 
+ bool RtpvExpirePendingFrame(PRTP_VIDEO_QUEUE queue, uint64_t nowUs) {
++    expireEarlyBlockPackets(queue, nowUs);
+     if (queue->pendingFrameDeadlineUs == 0 || nowUs < queue->pendingFrameDeadlineUs) {
+         return false;
+     }
+@@ -771,6 +898,10 @@ uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
+ }
+ 
+ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry) {
++    if (queue->earlyBlockDeadlineUs != 0) {
++        expireEarlyBlockPackets(queue, PltGetMicroseconds());
++    }
++
+     if (isBefore16(packet->sequenceNumber, queue->nextContiguousSequenceNumber)) {
+         // Reject packets behind our current buffer window
+         return RTPF_RET_REJECTED;
+@@ -818,6 +949,16 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
+         return RTPF_RET_REJECTED;
+     }
+ 
++    // A later block of this frame arrived before the block we are waiting for, which may
++    // still be on its way. Once holding, later-block packets keep being held even while
++    // the awaited block arrives, rather than ending that block early.
++    if (nvPacket->frameIndex == queue->currentFrameNumber &&
++            fecCurrentBlockNumber > queue->multiFecCurrentBlockNumber &&
++            (queue->pendingFecBlockList.count == 0 || queue->earlyBlockList.count != 0) &&
++            holdEarlyBlockPacket(queue, packetEntry, packet, length, nvPacket)) {
++        return RTPF_RET_QUEUED;
++    }
++
+     // Reinitialize the queue if it's empty after a frame delivery or
+     // if we can't finish a frame before receiving the next one.
+     if (queue->pendingFecBlockList.count == 0 || queue->currentFrameNumber != nvPacket->frameIndex ||
+@@ -1081,6 +1222,10 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
+             }
+         }
+ 
++        if (queue->earlyBlockList.count != 0 && queue->pendingFecBlockList.count == 0) {
++            replayEarlyBlockPackets(queue);
++        }
++
+         return RTPF_RET_QUEUED;
+     }
+ }
+diff --git a/src/RtpVideoQueue.h b/src/RtpVideoQueue.h
+index 0d0b106..1171c04 100644
+--- a/src/RtpVideoQueue.h
++++ b/src/RtpVideoQueue.h
+@@ -54,6 +54,15 @@ typedef struct _RTP_VIDEO_QUEUE {
+     uint8_t multiFecCurrentBlockNumber;
+     uint8_t multiFecLastBlockNumber;
+ 
++    // PyroWave: packets of a later FEC block of the current frame that arrived before
++    // the block the queue is waiting for. They are replayed once that block completes,
++    // or dropped with the frame at earlyBlockDeadlineUs.
++    RTPV_QUEUE_LIST earlyBlockList;
++    uint64_t earlyBlockFirstUs;
++    uint64_t earlyBlockDeadlineUs;
++    uint32_t earlyBlockFrameNumber;
++    bool replayingEarlyBlocks;
++
+     uint64_t lastOosFramePresentationTimestamp;
+     bool receivedOosData;
+ 

@@ -32,6 +32,14 @@ jobs:
           submodules: 'recursive'
           fetch-depth: 1
 
+      - name: Apply moonlight-common-c patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          for patch in patches/moonlight-common-c/*.patch; do
+            git -C moonlight-common-c/moonlight-common-c apply --verbose "$GITHUB_WORKSPACE/$patch"
+          done
+
       - name: Setup environment
         run: |
           sudo apt update
