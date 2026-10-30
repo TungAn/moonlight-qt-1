@@ -14,6 +14,7 @@
 #include "streaming/gpuperformancehold.h"
 #include "backend/networkbuffers.h"
 
+#include <cmath>
 #include <Limelight.h>
 #include "SDL_compat.h"
 #include "utils.h"
@@ -392,7 +393,8 @@ int Session::drSetup(int videoFormat, int width, int height, int frameRate, void
     s_ActiveSession->m_ActiveVideoFormat = videoFormat;
     s_ActiveSession->m_ActiveVideoWidth = width;
     s_ActiveSession->m_ActiveVideoHeight = height;
-    s_ActiveSession->m_ActiveVideoFrameRate = frameRate;
+    // A fractional rate comes back in millihertz; local decoding uses the whole-number rate
+    s_ActiveSession->m_ActiveVideoFrameRate = frameRate > 1000 ? (frameRate + 500) / 1000 : frameRate;
 
     // Defer decoder setup until we've started streaming so we
     // don't have to hide and show the SDL window (which seems to
@@ -862,6 +864,26 @@ bool Session::initialize(QQuickWindow* qtWindow)
     m_StreamConfig.fps = m_Preferences->fps;
     snapshotPresentationSettings(testWindow);
     m_StreamConfig.bitrate = m_Preferences->bitrateKbps;
+
+    // MOONLIGHT_STREAM_FPS (e.g. 59.75) asks the host for a fractional frame rate, so its virtual
+    // display can match a panel that does not run at exactly twice or once the whole rate. Like
+    // Artemis/Apollo, the host gets millihertz in the launch mode and SDP; everything local keeps
+    // the whole-number rate.
+    m_HostFrameRate = m_StreamConfig.fps;
+    if (const QByteArray streamFps{qgetenv("MOONLIGHT_STREAM_FPS")}; !streamFps.isEmpty()) {
+        bool ok{false};
+        const double fps{streamFps.toDouble(&ok)};
+        const int millihertz{ok ? static_cast<int>(std::lround(fps * 1000.0)) : 0};
+        if (ok && std::abs(fps - m_StreamConfig.fps) < 1.0 && millihertz % 1000 != 0) {
+            m_HostFrameRate = millihertz;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Requesting %.3f FPS from the host (%d mHz)",
+                        millihertz / 1000.0, millihertz);
+        } else if (!ok || millihertz % 1000 != 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Ignoring MOONLIGHT_STREAM_FPS=%s: it must be within 1 FPS of the %d FPS setting",
+                        streamFps.constData(), m_StreamConfig.fps);
+        }
+    }
 
 #ifndef STEAM_LINK
     // Opt-in to all encryption features if we detect that the platform
@@ -1861,9 +1883,11 @@ bool Session::startConnectionAsync()
 
     try {
         NvHTTP http(m_Computer);
+        STREAM_CONFIGURATION hostStreamConfig{m_StreamConfig};
+        hostStreamConfig.fps = m_HostFrameRate;
         http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",
                       m_Computer->isNvidiaServerSoftware,
-                      m_App.id, &m_StreamConfig,
+                      m_App.id, &hostStreamConfig,
                       enableGameOptimizations,
                       m_Preferences->playAudioOnHost,
                       m_InputHandler->getAttachedGamepadMask(),
@@ -1995,7 +2019,9 @@ bool Session::startConnectionAsync()
     // k_ConnCallbacks, which keeps its V1 layout. They are delivered straight to the driver's
     // registry (not through the SDL event queue: haptics are latency sensitive and the driver
     // has its own writer thread). The extended common-c is required (steamcontrollerprotocol.h).
-    int err = LiStartConnectionWithSteamController(&hostInfo, &m_StreamConfig,
+    STREAM_CONFIGURATION hostStreamConfig{m_StreamConfig};
+    hostStreamConfig.fps = m_HostFrameRate; // Copied by LiStartConnection()
+    int err = LiStartConnectionWithSteamController(&hostInfo, &hostStreamConfig,
                                                    &k_ConnCallbacks,
                                                    &m_VideoCallbacks,
                                                    &m_AudioCallbacks,
