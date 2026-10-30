@@ -1,8 +1,8 @@
 diff --git a/src/RtpVideoQueue.c b/src/RtpVideoQueue.c
-index 8172191..29620e9 100644
+index 97304f0..877197b 100644
 --- a/src/RtpVideoQueue.c
 +++ b/src/RtpVideoQueue.c
-@@ -54,8 +54,10 @@ static void purgeListEntries(PRTPV_QUEUE_LIST list) {
+@@ -61,8 +61,10 @@ static void purgeListEntries(PRTPV_QUEUE_LIST list) {
  }
  
  void RtpvCleanupQueue(PRTP_VIDEO_QUEUE queue) {
@@ -13,7 +13,7 @@ index 8172191..29620e9 100644
      queue->pendingFrameDeadlineUs = 0;
      queue->pendingFrameDeadlinePrecise = false;
      queue->onTimeDeadlineQueried = false;
-@@ -732,15 +734,140 @@ static bool hasCompletePyroWaveCriticalData(PRTP_VIDEO_QUEUE queue) {
+@@ -739,15 +741,172 @@ static bool hasCompletePyroWaveCriticalData(PRTP_VIDEO_QUEUE queue) {
      return received == remaining;
  }
  
@@ -25,10 +25,42 @@ index 8172191..29620e9 100644
 +#define EARLY_BLOCK_HOLD_US 3000
 +#define EARLY_BLOCK_MAX_PACKETS 1024
 +
++// MOONLIGHT_LATE_BLOCK_HOLD: 0 = off (drop as before), "narrow" = hold only while nothing of
++// the awaited block has arrived, anything else (or unset) = also hold while the awaited block
++// is incomplete. The last covers a block 0 whose first batch arrived and whose tail was
++// overtaken by block 1, seen on Android over the same Wi-Fi.
++enum { EARLY_BLOCK_HOLD_OFF, EARLY_BLOCK_HOLD_NARROW, EARLY_BLOCK_HOLD_WIDE };
++
++static int earlyBlockHoldMode(void) {
++    static int mode = -1;
++    if (mode < 0) {
++        const char* value = getenv("MOONLIGHT_LATE_BLOCK_HOLD");
++        if (value != NULL && strcmp(value, "0") == 0) {
++            mode = EARLY_BLOCK_HOLD_OFF;
++        }
++        else if (value != NULL && strcmp(value, "narrow") == 0) {
++            mode = EARLY_BLOCK_HOLD_NARROW;
++        }
++        else {
++            mode = EARLY_BLOCK_HOLD_WIDE;
++        }
++        Limelog("Late FEC block hold: %s\n", mode == EARLY_BLOCK_HOLD_OFF ? "off" :
++                mode == EARLY_BLOCK_HOLD_NARROW ? "narrow" : "wide");
++    }
++    return mode;
++}
++
 +static bool holdEarlyBlockPacket(PRTP_VIDEO_QUEUE queue, PRTPV_QUEUE_ENTRY entry, PRTP_PACKET packet,
 +                                 int length, PNV_VIDEO_PACKET nvPacket) {
 +    if (!(NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) ||
 +            queue->earlyBlockList.count >= EARLY_BLOCK_MAX_PACKETS) {
++        return false;
++    }
++
++    const int mode = earlyBlockHoldMode();
++    if (mode == EARLY_BLOCK_HOLD_OFF ||
++            (mode == EARLY_BLOCK_HOLD_NARROW &&
++             queue->pendingFecBlockList.count != 0 && queue->earlyBlockList.count == 0)) {
 +        return false;
 +    }
 +
@@ -154,7 +186,7 @@ index 8172191..29620e9 100644
      if (queue->pendingFrameDeadlineUs == 0 || nowUs < queue->pendingFrameDeadlineUs) {
          return false;
      }
-@@ -771,6 +898,10 @@ uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
+@@ -779,6 +938,10 @@ uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
  }
  
  int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry) {
@@ -165,16 +197,15 @@ index 8172191..29620e9 100644
      if (isBefore16(packet->sequenceNumber, queue->nextContiguousSequenceNumber)) {
          // Reject packets behind our current buffer window
          return RTPF_RET_REJECTED;
-@@ -818,6 +949,16 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
+@@ -826,6 +989,15 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
          return RTPF_RET_REJECTED;
      }
  
 +    // A later block of this frame arrived before the block we are waiting for, which may
-+    // still be on its way. Once holding, later-block packets keep being held even while
-+    // the awaited block arrives, rather than ending that block early.
++    // still be on its way (all of it, or the tail of it). Once holding, later-block packets
++    // keep being held even while the awaited block arrives, rather than ending that block early.
 +    if (nvPacket->frameIndex == queue->currentFrameNumber &&
 +            fecCurrentBlockNumber > queue->multiFecCurrentBlockNumber &&
-+            (queue->pendingFecBlockList.count == 0 || queue->earlyBlockList.count != 0) &&
 +            holdEarlyBlockPacket(queue, packetEntry, packet, length, nvPacket)) {
 +        return RTPF_RET_QUEUED;
 +    }
@@ -182,7 +213,7 @@ index 8172191..29620e9 100644
      // Reinitialize the queue if it's empty after a frame delivery or
      // if we can't finish a frame before receiving the next one.
      if (queue->pendingFecBlockList.count == 0 || queue->currentFrameNumber != nvPacket->frameIndex ||
-@@ -1081,6 +1222,10 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
+@@ -1092,6 +1264,10 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
              }
          }
  
@@ -213,3 +244,287 @@ index 0d0b106..1171c04 100644
      uint64_t lastOosFramePresentationTimestamp;
      bool receivedOosData;
  
+diff --git a/tests/pyrowave_late_block.c b/tests/pyrowave_late_block.c
+new file mode 100644
+index 0000000..687af84
+--- /dev/null
++++ b/tests/pyrowave_late_block.c
+@@ -0,0 +1,278 @@
++// Late FEC block hold (patches/moonlight-common-c/0001-hold-late-pyrowave-fec-block.patch).
++// Harness adapted from karsyboy/moonlight-common-c tests/pyrowave_record_queue.c (GPL-3.0).
++// Run with MOONLIGHT_LATE_BLOCK_HOLD unset (wide) and set to narrow.
++#include "Limelight-internal.h"
++#include "RtpVideoQueue.h"
++#include "rs.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define EXPECT(condition, description) do { \
++    if (!(condition)) { \
++        fprintf(stderr, "FAIL: %s (line %d)\n", description, __LINE__); \
++        failures++; \
++    } \
++} while (0)
++
++#define PACKET_SIZE 64
++#define DATA_PACKETS 4
++#define DEADLINE_US 1000
++#define PYROWAVE_FORMAT 0x0F0000
++
++int AppVersionQuad[4] = {7, 1, 431, -1};
++STREAM_CONFIGURATION StreamConfig = {0};
++CONNECTION_LISTENER_CALLBACKS ListenerCallbacks = {0};
++int NegotiatedVideoFormat = PYROWAVE_FORMAT;
++
++static uint64_t fakeNowUs = 1000000;
++static int failures;
++static unsigned submittedFrames[8];
++static unsigned submittedLost[8];
++static unsigned submittedPackets[8];
++static unsigned lostNotifications;
++static unsigned fecPercent;
++static unsigned dataPackets = DATA_PACKETS;
++
++uint64_t PltGetMicroseconds(void) { return ++fakeNowUs; }
++void connectionSawFrame(uint32_t frame) { (void)frame; }
++void connectionSendFrameFecStatus(PSS_FRAME_FEC_STATUS status) { (void)status; }
++void notifyFrameLost(unsigned frame, bool speculative) {
++    (void)frame;
++    (void)speculative;
++    lostNotifications++;
++}
++void queueRtpPacket(PRTPV_QUEUE_ENTRY entry) {
++    unsigned frame = LE32(((PNV_VIDEO_PACKET)((char*)entry->packet + sizeof(RTP_PACKET) + 4))->frameIndex);
++    if (frame < 8) {
++        submittedFrames[frame]++;
++        submittedLost[frame] += entry->isLost;
++        submittedPackets[frame]++;
++    }
++    free(entry->packet);
++}
++
++// These tests use zero-parity FEC blocks. Entering the Reed-Solomon path would
++// mean the scenario is malformed for this harness and should fail immediately.
++void reed_solomon_init(void) { }
++reed_solomon* reed_solomon_new(int dataShards, int parityShards) {
++    (void)dataShards; (void)parityShards;
++    fprintf(stderr, "unexpected Reed-Solomon recovery\n");
++    abort();
++}
++void reed_solomon_release(reed_solomon* rs) { (void)rs; }
++int reed_solomon_decode(reed_solomon* rs, uint8_t** shards, uint8_t* marks, int count, int size) {
++    (void)rs; (void)shards; (void)marks; (void)count; (void)size;
++    fprintf(stderr, "unexpected Reed-Solomon decode\n");
++    abort();
++}
++
++static void resetObservations(void) {
++    memset(submittedFrames, 0, sizeof(submittedFrames));
++    memset(submittedLost, 0, sizeof(submittedLost));
++    memset(submittedPackets, 0, sizeof(submittedPackets));
++    lostNotifications = 0;
++}
++
++static void beginQueue(RTP_VIDEO_QUEUE* queue, int videoFormat) {
++    memset(queue, 0, sizeof(*queue));
++    fecPercent = 0;
++    dataPackets = DATA_PACKETS;
++    NegotiatedVideoFormat = videoFormat;
++    RtpvInitializeQueue(queue);
++    resetObservations();
++}
++
++static int addPacket(RTP_VIDEO_QUEUE* queue, unsigned frame, unsigned block,
++                     unsigned lastBlock, unsigned index, unsigned baseSequence,
++                     unsigned flags, bool recordStart, bool validHeader,
++                     unsigned criticalCount) {
++    const int dataOffset = sizeof(RTP_PACKET) + 4;
++    const int payloadOffset = dataOffset + sizeof(NV_VIDEO_PACKET);
++    const int packetLength = StreamConfig.packetSize + dataOffset;
++    char* buffer = (char*)calloc(1, packetLength + sizeof(RTPV_QUEUE_ENTRY));
++    PRTP_PACKET packet;
++    PNV_VIDEO_PACKET nv;
++    PRTPV_QUEUE_ENTRY entry;
++    unsigned sequence = (baseSequence + index) & 0xFFFF;
++    int result;
++
++    if (buffer == NULL) abort();
++    packet = (PRTP_PACKET)buffer;
++    packet->header = FLAG_EXTENSION;
++    packet->sequenceNumber = (uint16_t)sequence;
++    packet->timestamp = frame * 900;
++    packet->ssrc = 0x12345678;
++
++    nv = (PNV_VIDEO_PACKET)(buffer + dataOffset);
++    nv->streamPacketIndex = LE32((block * dataPackets + index) << 8);
++    nv->frameIndex = LE32(frame);
++    nv->flags = (uint8_t)flags;
++    nv->extraFlags = recordStart ? NV_VIDEO_PACKET_EXTRA_FLAG_PYROWAVE_RECORD_START : 0;
++    nv->multiFecBlocks = (uint8_t)((block << 4) | (lastBlock << 6));
++    nv->fecInfo = LE32((dataPackets << 22) | (fecPercent << 4) | (index << 12));
++
++    if (index == 0) {
++        uint8_t* payload = (uint8_t*)buffer + payloadOffset;
++        if (validHeader) {
++            payload[0] = 0x01;
++            payload[6] = (uint8_t)criticalCount;
++            payload[7] = (uint8_t)(criticalCount >> 8);
++        } else {
++            payload[0] = 0x02;
++            payload[6] = (uint8_t)criticalCount;
++            payload[7] = (uint8_t)(criticalCount >> 8);
++        }
++    }
++
++    entry = (PRTPV_QUEUE_ENTRY)(buffer + packetLength);
++    memset(entry, 0, sizeof(*entry));
++    entry->packet = packet;
++    result = RtpvAddPacket(queue, packet, packetLength, entry);
++    if (result == RTPF_RET_REJECTED) {
++        free(buffer);
++    }
++    return result;
++}
++
++static void addFullFrame(RTP_VIDEO_QUEUE* queue, unsigned frame, unsigned baseSequence,
++                         unsigned block, unsigned lastBlock, bool recordStart,
++                         unsigned criticalCount) {
++    unsigned i;
++    for (i = 0; i < dataPackets; i++) {
++        unsigned flags = FLAG_CONTAINS_PIC_DATA;
++        if (i == 0) flags |= FLAG_SOF;
++        if (i == dataPackets - 1) flags |= FLAG_EOF;
++        addPacket(queue, frame, block, lastBlock, i, baseSequence, flags,
++                  recordStart && i == 0, true, criticalCount);
++    }
++}
++
++static void testLateFirstBlockIsHeld(void) {
++    RTP_VIDEO_QUEUE queue;
++    beginQueue(&queue, PYROWAVE_FORMAT);
++    // The first packets of block 1 overtake all of block 0, as seen over Wi-Fi
++    EXPECT(addPacket(&queue, 1, 1, 1, 0, 104, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, false, false, 0) == RTPF_RET_QUEUED,
++           "early block 1 packet is held");
++    addPacket(&queue, 1, 1, 1, 1, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    EXPECT(lostNotifications == 0, "early block does not drop the frame");
++    EXPECT(RtpvGetPendingFrameDeadlineUs(&queue) != 0, "held packets arm a deadline");
++    addFullFrame(&queue, 1, 100, 0, 1, true, 2);
++    addPacket(&queue, 1, 1, 1, 2, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 3, 104, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    EXPECT(submittedPackets[1] == 2 * DATA_PACKETS && submittedLost[1] == 0, "frame completes once block 0 arrives");
++    EXPECT(lostNotifications == 0, "no frame is reported lost");
++    EXPECT(RtpvGetPendingFrameDeadlineUs(&queue) == 0, "completed frame leaves no deadline");
++    addFullFrame(&queue, 2, 108, 0, 0, true, 2);
++    EXPECT(submittedPackets[2] == DATA_PACKETS, "next frame is unaffected");
++    RtpvCleanupQueue(&queue);
++}
++
++static void testInterleavedLateFirstBlockIsHeld(void) {
++    RTP_VIDEO_QUEUE queue;
++    beginQueue(&queue, PYROWAVE_FORMAT);
++    addPacket(&queue, 1, 1, 1, 0, 104, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 0, 100, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, true, true, 2);
++    // Block 1 keeps arriving while block 0 is incomplete; it must not end block 0 early
++    addPacket(&queue, 1, 1, 1, 1, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 1, 100, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 2, 100, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 2, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 3, 100, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 3, 104, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    EXPECT(submittedPackets[1] == 2 * DATA_PACKETS && submittedLost[1] == 0, "interleaved blocks complete without holes");
++    EXPECT(lostNotifications == 0, "interleaved blocks drop nothing");
++    EXPECT(RtpvGetPendingFrameDeadlineUs(&queue) == 0, "interleaved frame leaves no deadline");
++    RtpvCleanupQueue(&queue);
++}
++
++static void testMissingFirstBlockDropsFrameAtDeadline(void) {
++    RTP_VIDEO_QUEUE queue;
++    beginQueue(&queue, PYROWAVE_FORMAT);
++    addPacket(&queue, 1, 1, 1, 0, 104, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    uint64_t deadline = RtpvGetPendingFrameDeadlineUs(&queue);
++    RtpvExpirePendingFrame(&queue, deadline - 1);
++    EXPECT(lostNotifications == 0, "frame is held until the deadline");
++    RtpvExpirePendingFrame(&queue, deadline);
++    EXPECT(lostNotifications == 1, "frame is reported lost at the deadline");
++    EXPECT(RtpvGetPendingFrameDeadlineUs(&queue) == 0, "dropping the frame clears the deadline");
++    EXPECT(addPacket(&queue, 1, 1, 1, 1, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0) == RTPF_RET_REJECTED,
++           "the rest of the dropped frame is rejected");
++    addFullFrame(&queue, 2, 108, 0, 0, true, 2);
++    EXPECT(submittedPackets[1] == 0 && submittedPackets[2] == DATA_PACKETS, "next frame is delivered");
++    RtpvCleanupQueue(&queue);
++}
++
++static void testPartialFirstBlockIsZeroFilledAtDeadline(void) {
++    RTP_VIDEO_QUEUE queue;
++    beginQueue(&queue, PYROWAVE_FORMAT);
++    addPacket(&queue, 1, 1, 1, 0, 104, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 0, 100, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, true, true, 1);
++    addPacket(&queue, 1, 0, 1, 1, 100, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 3, 100, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 1, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    RtpvExpirePendingFrame(&queue, RtpvGetPendingFrameDeadlineUs(&queue));
++    EXPECT(lostNotifications == 0, "a partial block 0 is delivered rather than dropped");
++    addPacket(&queue, 1, 1, 1, 2, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 3, 104, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    EXPECT(submittedPackets[1] == 2 * DATA_PACKETS && submittedLost[1] == 1, "only the missing block 0 packet is zero-filled");
++    RtpvCleanupQueue(&queue);
++}
++
++static void testHeldPacketsOfAnEarlierFrameAreDropped(void) {
++    RTP_VIDEO_QUEUE queue;
++    beginQueue(&queue, PYROWAVE_FORMAT);
++    addPacket(&queue, 1, 1, 1, 0, 104, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    // Frame 2 starts in order: frame 1 is given up and its held packets go with it
++    addFullFrame(&queue, 2, 108, 0, 0, true, 2);
++    EXPECT(submittedPackets[2] == DATA_PACKETS, "the next frame is delivered");
++    addFullFrame(&queue, 3, 112, 0, 0, true, 2);
++    EXPECT(submittedPackets[3] == DATA_PACKETS, "held packets of frame 1 do not block frame 3");
++    EXPECT(RtpvGetPendingFrameDeadlineUs(&queue) == 0, "no deadline is left for frame 1");
++    RtpvCleanupQueue(&queue);
++}
++
++static void testLateTailOfFirstBlockIsHeld(void) {
++    RTP_VIDEO_QUEUE queue;
++    const char* mode = getenv("MOONLIGHT_LATE_BLOCK_HOLD");
++    const bool narrow = mode != NULL && strcmp(mode, "narrow") == 0;
++    beginQueue(&queue, PYROWAVE_FORMAT);
++    // Block 0's first batch arrives, then block 1 overtakes its tail (seen on Android)
++    addPacket(&queue, 1, 0, 1, 0, 100, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, true, true, DATA_PACKETS);
++    addPacket(&queue, 1, 0, 1, 1, 100, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    int held = addPacket(&queue, 1, 1, 1, 0, 104, FLAG_SOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 2, 100, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 0, 1, 3, 100, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 1, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 2, 104, FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    addPacket(&queue, 1, 1, 1, 3, 104, FLAG_EOF | FLAG_CONTAINS_PIC_DATA, false, false, 0);
++    if (narrow) {
++        EXPECT(!(submittedPackets[1] == 2 * DATA_PACKETS && submittedLost[1] == 0 && lostNotifications == 0),
++               "narrow hold does not cover an overtaken tail (the old behaviour)");
++    } else {
++        EXPECT(held == RTPF_RET_QUEUED, "the block 1 packet that overtook the tail is held");
++        EXPECT(submittedPackets[1] == 2 * DATA_PACKETS && submittedLost[1] == 0, "frame completes once the tail arrives");
++        EXPECT(lostNotifications == 0, "no frame is reported lost");
++        EXPECT(RtpvGetPendingFrameDeadlineUs(&queue) == 0, "completed frame leaves no deadline");
++    }
++    fprintf(stderr, "%s: overtaken tail -> %u packets, %u lost, %u frames reported lost\n",
++            narrow ? "narrow" : "wide", submittedPackets[1], submittedLost[1], lostNotifications);
++    addFullFrame(&queue, 2, 108, 0, 0, true, 2);
++    EXPECT(submittedPackets[2] == DATA_PACKETS, "next frame is unaffected");
++    RtpvCleanupQueue(&queue);
++}
++
++bool isReferenceFrameInvalidationEnabled(void) { return false; }
++
++int main(void) {
++    StreamConfig.packetSize = PACKET_SIZE;
++    testLateFirstBlockIsHeld();
++    testInterleavedLateFirstBlockIsHeld();
++    testMissingFirstBlockDropsFrameAtDeadline();
++    testPartialFirstBlockIsZeroFilledAtDeadline();
++    testHeldPacketsOfAnEarlierFrameAreDropped();
++    testLateTailOfFirstBlockIsHeld();
++    fprintf(stderr, "%s\n", failures ? "FAILED" : "all passed");
++    return failures ? 1 : 0;
++}
