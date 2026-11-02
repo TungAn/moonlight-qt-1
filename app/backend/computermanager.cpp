@@ -651,10 +651,13 @@ public:
     {
         connect(this, &PendingQuitTask::quitAppFailed,
                 computerManager, &ComputerManager::quitAppCompleted);
+        connect(this, &PendingQuitTask::quitAppSucceeded,
+                computerManager, [computerManager] { emit computerManager->quitAppCompleted(QVariant()); });
     }
 
 signals:
     void quitAppFailed(QString error);
+    void quitAppSucceeded();
 
 private:
     void run()
@@ -664,6 +667,19 @@ private:
         try {
             if (m_Computer->currentGameId != 0) {
                 http.quitApp(m_ExpectedAppId);
+            }
+
+            // quitApp() has confirmed that nothing runs anymore. Report it now
+            // rather than on the next poll: a CLI quit or launch stops polling
+            // once it has found the host, so that poll may never come.
+            bool pending;
+            {
+                QWriteLocker lock(&m_Computer->lock);
+                pending = m_Computer->pendingQuit;
+                m_Computer->pendingQuit = false;
+            }
+            if (pending) {
+                emit quitAppSucceeded();
             }
         } catch (const GfeHttpResponseException& e) {
             {

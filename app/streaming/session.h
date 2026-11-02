@@ -9,6 +9,7 @@
 #include "input/input.h"
 #include "video/decoder.h"
 #include "audio/renderers/renderer.h"
+#include "audio/microphone.h"
 #include "video/overlaymanager.h"
 
 class SupportedVideoFormatList : public QList<int>
@@ -126,6 +127,13 @@ public:
         return m_OverlayManager;
     }
 
+    // Color range requested from the host (COLOR_RANGE_*), which encodes
+    // with it; COLOR_RANGE_OVERRIDE can change it from the decoder's choice.
+    int getNegotiatedColorRange() const
+    {
+        return m_StreamConfig.colorRange;
+    }
+
     void flushWindowEvents();
 
     void setShouldExit(bool quitHostApp = false);
@@ -185,6 +193,15 @@ private:
     void toggleFullscreen();
 
     void notifyMouseEmulationMode(bool enabled);
+
+    // Mute or unmute the microphone sent to the host (Ctrl+Alt+Shift+U).
+    void toggleMicrophone();
+
+    // Start sending the microphone when the host set it up and it is not muted.
+    void startMicrophone();
+
+    // Show "Microphone muted" while the status overlay is otherwise free.
+    void updateMicrophoneStatus();
 
     void updateOptimalWindowDisplayMode();
 
@@ -286,6 +303,11 @@ private:
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;
+    MicrophoneStream m_Microphone;
+    // The user muted the microphone, or it stopped (device lost, open failed).
+    bool m_MicrophoneMuted;
+    QString m_MicrophoneStatus;
+    bool m_MicrophoneStatusShown;
     int m_FlushingWindowEventsRef;
     QStringList m_LaunchWarnings;
     bool m_ShouldExit;

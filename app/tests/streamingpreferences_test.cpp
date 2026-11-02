@@ -141,6 +141,28 @@ private slots:
         QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
         request["values"] = QJsonObject{{"recommendedFullScreenMode", 2}};
         QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+
+        // Clients such as PyroDeck show the microphone settings under Audio,
+        // echo cancellation only with the microphone on.
+        for (const auto& value : m_Preferences->integrationSnapshot().value("registry").toArray()) {
+            const auto descriptor = value.toObject();
+            const QString key = descriptor.value("key").toString();
+            if (key == "enableMicrophone" || key == "micEchoCancel") {
+                QCOMPARE(descriptor.value("category").toString(), QStringLiteral("Audio"));
+                QCOMPARE(descriptor.value("scope").toString(), QStringLiteral("profile"));
+            }
+            if (key == "micEchoCancel") {
+                QCOMPARE(descriptor.value("requires").toString(), QStringLiteral("enableMicrophone"));
+                QCOMPARE(descriptor.value("choices").toArray().size(), 3);
+            }
+        }
+        request["revision"] = m_Preferences->integrationSnapshot().value("revision");
+        request["values"] = QJsonObject{{"micEchoCancel", 3}};
+        QVERIFY(!m_Preferences->integrationRequest(request).value("ok").toBool());
+        request["values"] = QJsonObject{{"enableMicrophone", true}, {"micEchoCancel", 2}};
+        QVERIFY(m_Preferences->integrationRequest(request).value("ok").toBool());
+        QVERIFY(m_Preferences->enableMicrophone);
+        QCOMPARE(m_Preferences->micEchoCancel, StreamingPreferences::MEC_OFF);
     }
 
     void freshInstallCreatesDefault()
@@ -292,6 +314,8 @@ private slots:
         m_Preferences->playAudioOnHost = true;
         m_Preferences->showPerformanceOverlay = true;
         m_Preferences->muteOnFocusLoss = true;
+        m_Preferences->enableMicrophone = true;
+        m_Preferences->micEchoCancel = StreamingPreferences::MEC_OFF;
         m_Preferences->windowMode = StreamingPreferences::WM_WINDOWED;
         m_Preferences->packetSize = 1392;
         m_Preferences->save();
@@ -299,6 +323,9 @@ private slots:
         QVERIFY(m_Preferences->activateProfile(QStringLiteral("default")));
         QCOMPARE(m_Preferences->width, 1920);
         QCOMPARE(m_Preferences->audioQuality, StreamingPreferences::AQ_HOST_DEFAULT);
+        // The microphone is off until the user turns it on.
+        QVERIFY(!m_Preferences->enableMicrophone);
+        QCOMPARE(m_Preferences->micEchoCancel, StreamingPreferences::MEC_AUTO);
         QVERIFY(m_Preferences->activateProfile(desktopId));
         QCOMPARE(m_Preferences->width, 3840);
         QCOMPARE(m_Preferences->height, 2160);
@@ -319,6 +346,8 @@ private slots:
         QVERIFY(m_Preferences->playAudioOnHost);
         QVERIFY(m_Preferences->showPerformanceOverlay);
         QVERIFY(m_Preferences->muteOnFocusLoss);
+        QVERIFY(m_Preferences->enableMicrophone);
+        QCOMPARE(m_Preferences->micEchoCancel, StreamingPreferences::MEC_OFF);
         QCOMPARE(m_Preferences->windowMode, StreamingPreferences::WM_WINDOWED);
         QCOMPARE(m_Preferences->packetSize, 1392);
         QVERIFY(!m_Preferences->enableMdns);

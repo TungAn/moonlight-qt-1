@@ -63,9 +63,38 @@ void PacingWorker::stop()
     }
     m_Wake.notify_all();
     if (m_Thread.joinable()) {
+        if (m_StopStall) {
+            std::unique_lock<std::mutex> lock(m_Lock);
+            if (!m_Wake.wait_for(lock, std::chrono::microseconds(m_StopStallUs), [this] { return m_Exited; })) {
+                const Call call = m_Call.load();
+                lock.unlock();
+                m_StopStall(callName(call), m_StopStallUs);
+            }
+        }
         m_Thread.join();
     }
     flush();
+}
+
+void PacingWorker::setStopStallReporter(StopStallFn fn, uint64_t afterUs)
+{
+    m_StopStall = fn;
+    m_StopStallUs = afterUs;
+}
+
+const char* PacingWorker::callName(Call call)
+{
+    switch (call) {
+    case Call::Wait:
+        return "wait";
+    case Call::Prepare:
+        return "prepare";
+    case Call::Present:
+        return "present";
+    case Call::ThreadExit:
+        return "thread exit";
+    }
+    return "unknown";
 }
 
 void PacingWorker::submit(const FrameTiming& timing, void* payload)
@@ -246,7 +275,9 @@ void PacingWorker::run()
             break;
         }
         const uint64_t preparationStart = m_Clock();
+        m_Call.store(Call::Prepare, std::memory_order_relaxed);
         const PrepareResult prepared = m_Presenter->vrrPrepare(entry.payload, decision.latched);
+        m_Call.store(Call::Wait, std::memory_order_relaxed);
         const uint64_t preparationEnd = m_Clock();
         if (prepared.sourceReusable || !prepared.prepared) {
             release(entry);
@@ -278,7 +309,9 @@ void PacingWorker::run()
         }
 
         const uint64_t submitUs = m_Clock();
+        m_Call.store(Call::Present, std::memory_order_relaxed);
         const PresentResult presented = m_Presenter->vrrPresent(decision.latched);
+        m_Call.store(Call::Wait, std::memory_order_relaxed);
         const uint64_t presentEnd = m_Clock();
         release(entry);
 
@@ -313,7 +346,13 @@ void PacingWorker::run()
         }
     }
 
+    m_Call.store(Call::ThreadExit, std::memory_order_relaxed);
     m_Presenter->vrrThreadStopping();
+    {
+        std::lock_guard<std::mutex> guard(m_Lock);
+        m_Exited = true;
+    }
+    m_Wake.notify_all();
 }
 
 }

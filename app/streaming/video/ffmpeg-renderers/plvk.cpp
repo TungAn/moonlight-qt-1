@@ -1,6 +1,7 @@
 #include "plvk.h"
 
 #include "streaming/session.h"
+#include "plvkcolorrange.h"
 #include "streaming/streamutils.h"
 
 // Implementation in plvk_c.c
@@ -559,17 +560,14 @@ bool PlVkRenderer::initialize(PDECODER_PARAMETERS params)
         return false;
     }
 
+    m_VideoFormat = params->videoFormat;
+
     if (m_SurfacelessProbe) {
         // No surface to present on, so there is no present mode to choose
     }
     else if (params->vrr.enabled && params->enableVsync && !params->testOnly) {
-        // FIFO would hold every present for the next fixed refresh; VRR needs
-        // a mode that flips when the frame is submitted.
-        m_VrrEnabled = chooseVrrPresentMode();
-        if (!m_VrrEnabled) {
-            m_VrrFallback = Vrr::FallbackReason::NoAdaptivePresentMode;
-            m_VkPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-        }
+        chooseVrrPresentMode();
+        m_VrrEnabled = true;
     }
     else if (params->enableVsync) {
         // FIFO mode improves frame pacing compared with Mailbox, especially for
@@ -788,9 +786,11 @@ bool PlVkRenderer::mapAvFrameToPlacebo(const AVFrame *frame, pl_frame* mappedFra
 
     // HACK: AMF AV1 encoding on the host PC does not set full color range properly in the
     // bitstream data, so libplacebo incorrectly renders the content as limited range.
-    //
-    // As a workaround, set full range manually in the mapped frame ourselves.
-    mappedFrame->repr.levels = PL_COLOR_LEVELS_FULL;
+    // The workaround is scoped to that case; see plVkFrameLevels().
+    mappedFrame->repr.levels = plVkFrameLevels(mappedFrame->repr.levels,
+                                               (m_VideoFormat & VIDEO_FORMAT_MASK_AV1) != 0,
+                                               Session::get() != nullptr &&
+                                                   Session::get()->getNegotiatedColorRange() == COLOR_RANGE_FULL);
 
     return true;
 }
@@ -846,6 +846,7 @@ bool PlVkRenderer::populateQueues(int videoFormat)
     vkDeviceContext->nb_comp_queues = m_Vulkan->queue_compute.count;
 
     // Select a video decode queue that is capable of decoding our chosen format
+    vkDeviceContext->queue_family_decode_index = -1;
     for (uint32_t i = 0; i < queueFamilyCount; i++) {
         if (queueFamilies[i].queueFamilyProperties.queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) {
             if (videoFormat & VIDEO_FORMAT_MASK_H264) {
@@ -974,6 +975,16 @@ void PlVkRenderer::waitToRender()
         return;
     }
 
+    // If a swapchain (re)creation failed, m_Swapchain is NULL. We can't render
+    // or resize it, and a device reset has already been requested, so skip this
+    // frame and let the main thread recreate the renderer.
+    if (m_Swapchain == nullptr) {
+        SDL_Event event;
+        event.type = SDL_RENDER_DEVICE_RESET;
+        SDL_PushEvent(&event);
+        return;
+    }
+
 #ifndef Q_OS_WIN32
     // With libplacebo's Vulkan backend, all swap_buffers does is wait for queued
     // presents to finish. This happens to be exactly what we want to do here, since
@@ -1075,7 +1086,7 @@ bool PlVkRenderer::applyColorspaceHint(const pl_color_space& color)
     return true;
 }
 
-void PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
+bool PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
 {
     // Reserve enough space to avoid allocating under the overlay lock
     constexpr int slotCount = (int)SDL_arraysize(m_Overlays);
@@ -1173,7 +1184,8 @@ void PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
     // Render the video image and overlays
     targetFrame.num_overlays = overlayCount;
     targetFrame.overlays = overlays;
-    if (!pl_render_image(m_Renderer, &mappedFrame, &targetFrame, &pl_render_fast_params)) {
+    const bool rendered = pl_render_image(m_Renderer, &mappedFrame, &targetFrame, &pl_render_fast_params);
+    if (!rendered) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "pl_render_image() failed");
     }
@@ -1181,6 +1193,29 @@ void PlVkRenderer::drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame)
     // libplacebo keeps textures referenced by recorded GPU work alive
     for (int i = 0; i < texturesToDestroyCount; i++) {
         pl_tex_destroy(m_Vulkan->gpu, &texturesToDestroy[i]);
+    }
+    return rendered;
+}
+
+void PlVkRenderer::noteVrrRenderResult(bool rendered)
+{
+    if (rendered) {
+        m_VrrRenderFailures = 0;
+        return;
+    }
+
+    // A single failure can be transient (an allocation under memory
+    // pressure); repeated ones mean this renderer cannot draw the stream.
+    // Ask for the usual renderer reset once per renderer, so a failure that
+    // survives recreation does not turn into a reset on every frame.
+    if (++m_VrrRenderFailures >= 3 && !m_VrrResetRequested) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "VRR: %d consecutive render failures; resetting the renderer",
+                     m_VrrRenderFailures);
+        m_VrrResetRequested = true;
+        SDL_Event event;
+        event.type = SDL_RENDER_DEVICE_RESET;
+        SDL_PushEvent(&event);
     }
 }
 
@@ -1241,39 +1276,47 @@ void PlVkRenderer::renderPlaceboFrame(pl_frame& mappedFrame)
 #endif
 }
 
-bool PlVkRenderer::chooseVrrPresentMode()
+void PlVkRenderer::chooseVrrPresentMode()
 {
     const char* driver = SDL_GetCurrentVideoDriver();
-    const bool wayland = driver != nullptr && strcmp(driver, "wayland") == 0;
     const bool gamescope = qEnvironmentVariableIsSet("GAMESCOPE_WAYLAND_DISPLAY") ||
                            qgetenv("XDG_CURRENT_DESKTOP").toLower().contains("gamescope");
 
-    // Wayland compositors flip a Mailbox image as soon as the panel allows
-    // and never tear, so it needs no software spacing floor. X11, KMSDRM and
-    // Gamescope show Immediate presents as adaptive flips; those can tear, so
-    // the pacing controller spaces them by a display period in software.
-    // Gamescope implements its own commit timing for Mailbox requests.
-    const VkPresentModeKHR preferred[] = {
-        wayland && !gamescope ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR,
-        wayland && !gamescope ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_MAILBOX_KHR,
-    };
-    for (VkPresentModeKHR mode : preferred) {
-        if (isPresentModeSupportedByPhysicalDevice(m_Vulkan->phys_device, mode)) {
-            m_VkPresentMode = mode;
-            m_VrrProtection = mode == VK_PRESENT_MODE_MAILBOX_KHR ?
-                Vrr::PresentProtection::Native : Vrr::PresentProtection::SoftwareFloor;
-            m_VrrFallback = Vrr::FallbackReason::NoFallback;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "VRR: using %s present mode (%s%s)",
-                        mode == VK_PRESENT_MODE_MAILBOX_KHR ? "Mailbox" : "Immediate",
-                        driver ? driver : "unknown",
-                        gamescope ? ", Gamescope" : "");
-            return true;
-        }
+    // Whether the output actually scans out adaptively is not observable
+    // here, so V-Sync stays synchronized: Mailbox (latched natively) or FIFO
+    // (spaced by the software floor so presents never queue). Immediate gave
+    // adaptive flips on X11/KMSDRM, but tears on a fixed-refresh panel or
+    // with adaptive sync disabled; PLVK_VRR_ALLOW_TEARING=1 opts back into it
+    // for outputs the user knows are in adaptive mode.
+    const bool tearingAllowed = qEnvironmentVariableIntValue("PLVK_VRR_ALLOW_TEARING") != 0;
+    const Vrr::PresentChoice choice = Vrr::chooseSynchronizedPresentMode(
+        isPresentModeSupportedByPhysicalDevice(m_Vulkan->phys_device, VK_PRESENT_MODE_MAILBOX_KHR),
+        isPresentModeSupportedByPhysicalDevice(m_Vulkan->phys_device, VK_PRESENT_MODE_IMMEDIATE_KHR),
+        tearingAllowed);
+    switch (choice.mode) {
+    case Vrr::PresentMode::Mailbox:
+        m_VkPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        break;
+    case Vrr::PresentMode::Immediate:
+        m_VkPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        break;
+    case Vrr::PresentMode::Fifo:
+        m_VkPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+        break;
     }
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "VRR: the surface supports neither Mailbox nor Immediate presentation");
-    return false;
+    m_VrrPresentMode = choice.mode;
+    m_VrrProtection = choice.protection;
+    m_VrrFallback = Vrr::FallbackReason::NoFallback;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "VRR: using %s present mode (%s%s%s); the panel's adaptive sync state is not verified",
+                Vrr::presentModeName(choice.mode),
+                driver ? driver : "unknown",
+                gamescope ? ", Gamescope" : "",
+                choice.mode == Vrr::PresentMode::Immediate ? ", tearing allowed by PLVK_VRR_ALLOW_TEARING" : "");
+    if (tearingAllowed && choice.mode != Vrr::PresentMode::Immediate) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "VRR: PLVK_VRR_ALLOW_TEARING is set but Immediate presentation is not supported");
+    }
 }
 
 Vrr::IFramePresenter* PlVkRenderer::getVrrPresenter(Vrr::PresentProtection* protection,
@@ -1300,7 +1343,15 @@ const char* PlVkRenderer::getVrrPresentModeName()
     if (!m_VrrEnabled) {
         return "none";
     }
-    return m_VkPresentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "Vulkan Mailbox" : "Vulkan Immediate";
+    switch (m_VrrPresentMode) {
+    case Vrr::PresentMode::Mailbox:
+        return "Vulkan Mailbox";
+    case Vrr::PresentMode::Immediate:
+        return "Vulkan Immediate";
+    case Vrr::PresentMode::Fifo:
+        return "Vulkan FIFO";
+    }
+    return "unknown";
 }
 
 bool PlVkRenderer::restoreSynchronizedPresentation()
@@ -1310,9 +1361,13 @@ bool PlVkRenderer::restoreSynchronizedPresentation()
         return true;
     }
 
-    // The adaptive swapchain (Immediate tears) must not outlive VRR pacing.
+    // A Mailbox or Immediate swapchain must not outlive VRR pacing: classic
+    // pacing expects FIFO.
     m_VrrEnabled = false;
     m_VrrFallback = Vrr::FallbackReason::InitializationFailed;
+    if (m_VkPresentMode == VK_PRESENT_MODE_FIFO_KHR) {
+        return true;
+    }
     m_VkPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     if (!createSwapchain(m_SwapchainDepth)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -1372,7 +1427,15 @@ bool PlVkRenderer::vrrPrepareMappedFrame(pl_frame& mappedFrame, bool& retainsSou
     pl_frame targetFrame;
     pl_frame_from_swapchain(&targetFrame, &prepared);
     const uint64_t renderStart = LiGetMicroseconds();
-    drawFrame(mappedFrame, targetFrame);
+    const bool rendered = drawFrame(mappedFrame, targetFrame);
+    noteVrrRenderResult(rendered);
+    if (!rendered) {
+        // The target holds no valid frame, so nothing is presented. Passes
+        // recorded before the failure may still read the source: finish
+        // them before the caller releases it.
+        pl_gpu_finish(m_Vulkan->gpu);
+        return false;
+    }
     pl_gpu_flush(m_Vulkan->gpu);
 
     // Observe GPU completion within a bound: the source (a decoder surface or
@@ -1423,8 +1486,10 @@ bool PlVkRenderer::vrrPresentPrepared()
 
     pl_frame targetFrame;
     pl_frame_from_swapchain(&targetFrame, &swapchainFrame);
+    bool rendered = true;
     if (m_VrrDirect) {
-        drawFrame(m_VrrDirectFrame, targetFrame);
+        rendered = drawFrame(m_VrrDirectFrame, targetFrame);
+        noteVrrRenderResult(rendered);
     }
     else if (m_VrrTarget->params.blit_src &&
              m_VrrTarget->params.format == swapchainFrame.fbo->params.format &&
@@ -1445,10 +1510,19 @@ bool PlVkRenderer::vrrPresentPrepared()
         prepared.color_repr = preparedRepr;
         pl_frame sourceFrame;
         pl_frame_from_swapchain(&sourceFrame, &prepared);
-        if (!pl_render_image(m_Renderer, &sourceFrame, &targetFrame, &pl_render_fast_params)) {
+        rendered = pl_render_image(m_Renderer, &sourceFrame, &targetFrame, &pl_render_fast_params);
+        if (!rendered) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "VRR: pl_render_image() failed converting the prepared image");
         }
+        noteVrrRenderResult(rendered);
+    }
+    if (!rendered) {
+        // An acquired image must still be submitted; clear it to the
+        // background rather than show whatever it held, and report the frame
+        // as not presented.
+        pl_frame_from_swapchain(&targetFrame, &swapchainFrame);
+        pl_render_image(m_Renderer, nullptr, &targetFrame, &pl_render_fast_params);
     }
 
     const bool submitted = pl_swapchain_submit_frame(m_Swapchain);
@@ -1471,7 +1545,7 @@ bool PlVkRenderer::vrrPresentPrepared()
 
     // Bounds GPU work in flight; with a blit-only frame this returns quickly.
     pl_swapchain_swap_buffers(m_Swapchain);
-    return true;
+    return rendered;
 }
 
 void PlVkRenderer::vrrDiscardPrepared()

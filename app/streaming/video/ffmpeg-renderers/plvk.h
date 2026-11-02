@@ -61,9 +61,9 @@ public:
     pl_vk_inst getVulkanInstance() const { return m_PlVkInstance; }
     void renderPlaceboFrame(pl_frame& mappedFrame);
 
-    // VRR presentation (Linux). The swapchain uses an adaptive present mode
-    // chosen at initialization: Mailbox (synchronized, never tears) on
-    // Wayland, Immediate elsewhere. Preparation renders into a renderer-owned
+    // VRR presentation (Linux). The swapchain's present mode is chosen at
+    // initialization and stays synchronized: Mailbox where offered, else FIFO
+    // (Immediate only with PLVK_VRR_ALLOW_TEARING). Preparation renders into a renderer-owned
     // texture and waits for its GPU completion, so the source can be released
     // and the swapchain image is only acquired, blitted and presented at the
     // target: holding an acquired image across the wait lets the next frame's
@@ -100,8 +100,11 @@ private:
     void beginRenderTiming();
     void endRenderTiming();
     // Render a mapped frame and overlays into `target`, scaled with aspect ratio.
-    void drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame);
-    bool chooseVrrPresentMode();
+    // Returns false when libplacebo failed to render; `targetFrame` then
+    // holds no valid image.
+    bool drawFrame(pl_frame& mappedFrame, pl_frame& targetFrame);
+    void noteVrrRenderResult(bool rendered);
+    void chooseVrrPresentMode();
     bool applyColorspaceHint(const pl_color_space& color);
 
     bool createSwapchain(int depth);
@@ -159,10 +162,15 @@ private:
     pl_swapchain_frame m_SwapchainFrame = {};
     bool m_HasPendingSwapchainFrame = false;
 
+    int m_VideoFormat = 0;
+
     // VRR presentation state, used only by the pacing worker thread.
     bool m_VrrEnabled = false;
     Vrr::PresentProtection m_VrrProtection = Vrr::PresentProtection::SoftwareFloor;
+    Vrr::PresentMode m_VrrPresentMode = Vrr::PresentMode::Fifo;
     Vrr::FallbackReason m_VrrFallback = Vrr::FallbackReason::NotRequested;
+    int m_VrrRenderFailures = 0;
+    bool m_VrrResetRequested = false;
     // The renderer-owned image prepared for the next present.
     pl_tex m_VrrTarget = nullptr;
     bool m_VrrPrepared = false;

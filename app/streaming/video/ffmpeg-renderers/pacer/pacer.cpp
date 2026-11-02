@@ -1,5 +1,6 @@
 #include "pacer.h"
 #include "streaming/streamutils.h"
+#include "streaming/session.h"
 #include "vrrdiagnostics.h"
 
 #ifdef Q_OS_WIN32
@@ -73,6 +74,9 @@ Pacer::~Pacer()
         SDL_WaitThread(m_RenderThread, nullptr);
     }
     else {
+        // Stop any further overlay callbacks
+        Session::get()->getOverlayManager().setOverlayRenderer(nullptr);
+
         // Notify the renderer that it is being destroyed soon
         // NB: This must happen on the same thread that calls renderFrame().
         m_VsyncRenderer->cleanupRenderContext();
@@ -185,6 +189,9 @@ int Pacer::renderThread(void* context)
 
         me->renderFrame(frame);
     }
+
+    // Stop any further overlay callbacks
+    Session::get()->getOverlayManager().setOverlayRenderer(nullptr);
 
     // Notify the renderer that it is being destroyed soon
     // NB: This must happen on the same thread that calls renderFrame().
@@ -303,6 +310,7 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing,
             config.reduceJudder = vrr->reduceJudder;
             config.protection = protection;
             m_VrrWorker = std::make_unique<Vrr::PacingWorker>(config, presenter, vrrClock);
+            m_VrrWorker->setStopStallReporter(Vrr::logStopStall);
             if (m_VrrWorker->start([] {
                     if (SDL_SetThreadPriority(SDL_THREAD_PRIORITY_TIME_CRITICAL) < 0) {
                         SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
@@ -313,6 +321,11 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing,
                             "VRR presentation active: %d FPS stream on a %d Hz display (%s, %s protection)",
                             maxVideoFps, vrr->displayRefreshHz, m_VsyncRenderer->getVrrPresentModeName(),
                             protection == Vrr::PresentProtection::Native ? "native" : "software floor");
+
+                // The VRR worker replaces the render thread, so it needs the
+                // same final preparations and overlay registration below.
+                m_VsyncRenderer->prepareToRender();
+                Session::get()->getOverlayManager().setOverlayRenderer(m_VsyncRenderer);
                 return true;
             }
             m_VrrWorker.reset();
@@ -387,6 +400,12 @@ bool Pacer::initialize(SDL_Window* window, int maxVideoFps, bool enablePacing,
         m_VsyncThread = SDL_CreateThread(Pacer::vsyncThread, "PacerVsync", this);
     }
 
+    // Allow the renderer to perform final preparations for rendering
+    m_VsyncRenderer->prepareToRender();
+
+    // Tell overlay manager to use this frontend renderer
+    Session::get()->getOverlayManager().setOverlayRenderer(m_VsyncRenderer);
+
     if (m_VsyncRenderer->isRenderThreadSupported()) {
         m_RenderThread = SDL_CreateThread(Pacer::renderThread, "PacerRender", this);
     }
@@ -406,7 +425,9 @@ void Pacer::renderFrame(AVFrame* frame)
     m_VideoStats->totalPacerTimeUs += (beforeRender - (uint64_t)frame->pkt_dts);
 
     // Render it
+    m_VsyncRenderer->acquireRenderLock();
     m_VsyncRenderer->renderFrame(frame);
+    m_VsyncRenderer->releaseRenderLock();
     uint64_t afterRender = LiGetMicroseconds();
 
     m_VideoStats->totalRenderTimeUs += (afterRender - beforeRender);

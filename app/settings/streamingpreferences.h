@@ -69,6 +69,16 @@ public:
     };
     Q_ENUM(AudioQuality)
 
+    // Echo cancellation for the microphone sent to the host. Automatic uses
+    // the system's echo canceller where one is available.
+    enum MicEchoCancel
+    {
+        MEC_AUTO,
+        MEC_ON,
+        MEC_OFF
+    };
+    Q_ENUM(MicEchoCancel)
+
     enum VideoCodecConfig
     {
         VCC_AUTO,
@@ -187,6 +197,8 @@ public:
     Q_PROPERTY(bool showPerformanceOverlay MEMBER showPerformanceOverlay NOTIFY showPerformanceOverlayChanged)
     Q_PROPERTY(AudioConfig audioConfig MEMBER audioConfig NOTIFY audioConfigChanged)
     Q_PROPERTY(AudioQuality audioQuality MEMBER audioQuality NOTIFY audioQualityChanged)
+    Q_PROPERTY(bool enableMicrophone MEMBER enableMicrophone NOTIFY enableMicrophoneChanged)
+    Q_PROPERTY(MicEchoCancel micEchoCancel MEMBER micEchoCancel NOTIFY micEchoCancelChanged)
     Q_PROPERTY(VideoCodecConfig videoCodecConfig MEMBER videoCodecConfig NOTIFY videoCodecConfigChanged)
     Q_PROPERTY(bool enableHdr MEMBER enableHdr NOTIFY enableHdrChanged)
     Q_PROPERTY(bool enableYUV444 MEMBER enableYUV444 NOTIFY enableYUV444Changed)
@@ -271,6 +283,8 @@ public:
     int packetSize;
     AudioConfig audioConfig;
     AudioQuality audioQuality;
+    bool enableMicrophone;
+    MicEchoCancel micEchoCancel;
     VideoCodecConfig videoCodecConfig;
     bool enableHdr;
     bool enableYUV444;
@@ -305,6 +319,8 @@ signals:
     void absoluteTouchModeChanged();
     void audioConfigChanged();
     void audioQualityChanged();
+    void enableMicrophoneChanged();
+    void micEchoCancelChanged();
     void videoCodecConfigChanged();
     void enableHdrChanged();
     void enableYUV444Changed();

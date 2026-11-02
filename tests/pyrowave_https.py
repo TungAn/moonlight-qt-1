@@ -29,7 +29,13 @@ def main():
             ("busy-stream", "probe", "reject"), ("busy-probe", "probe", "reject"),
             ("not-found", "probe", "reject"),
             ("timeout", "probe", "reject"),
+            # A conditional quit reaches /cancel only on hosts that advertise
+            # the check; older hosts would stop any running game.
+            ("cancel-supported", "cancel", "success"),
+            ("cancel-unsupported", "cancel", "reject"),
         ]:
+            cancels = []
+
             class Handler(http.server.BaseHTTPRequestHandler):
                 def log_message(self, *_):
                     pass
@@ -40,7 +46,17 @@ def main():
                             xml = '<root status_code="200"><appversion>7.1.431.-1</appversion>'
                             if mode != "unsupported":
                                 xml += '<PyroWaveBandwidthProbeBytes>33554432</PyroWaveBandwidthProbeBytes>'
+                            if mode == "cancel-supported":
+                                xml += '<PyroshineConditionalCancel>1</PyroshineConditionalCancel>'
                             body = (xml + '</root>').encode()
+                            self.send_response(200)
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+                        if self.path.startswith("/cancel"):
+                            cancels.append(self.path)
+                            body = b'<root status_code="200"><cancel>1</cancel></root>'
                             self.send_response(200)
                             self.send_header("Content-Length", str(len(body)))
                             self.end_headers()
@@ -83,6 +99,10 @@ def main():
             try:
                 subprocess.run([str(args.harness.resolve()), str(server.server_port), str(certificate),
                                 operation, expected], check=True, timeout=20)
+                if mode == "cancel-supported" and not any("expectedAppId=42" in path for path in cancels):
+                    raise AssertionError("conditional cancel was not sent")
+                if mode == "cancel-unsupported" and cancels:
+                    raise AssertionError(f"cancel sent to a host without the check: {cancels}")
                 print(f"PASS {mode}/{operation}", flush=True)
             finally:
                 server.shutdown()

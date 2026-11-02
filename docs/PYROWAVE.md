@@ -63,7 +63,11 @@ common-c reassembly ─▶ submitDecodeUnit ─▶ single-slot mailbox ─▶ re
   avoiding steady-state per-frame allocation.
 - **Loss.** Native whole-frame FEC is used; incomplete native frames are dropped,
   and the next frame resumes decoding without an IDR request because every frame
-  is intra-coded.
+  is intra-coded. With a host that offers it (Pyroshine), the FEC block layout
+  is extended from four to sixteen Reed-Solomon blocks per frame, so frames
+  above about 1.1 Gb/s at 120 FPS keep the host's configured parity instead of
+  most of it being dropped to fit four blocks (see `x-ss-pyrowave.fecBlocks` in
+  common-c's `docs/pyrowave.md`).
 - **Renderer refresh.** After creating or resetting the renderer, request an
   independent frame through the normal IDR control message. Pyroshine replays
   its cached frame, so reconnect does not wait for a new desktop redraw if the
@@ -122,22 +126,22 @@ live network rate controller.
 
 | Item | Value |
 | --- | --- |
-| Source | [`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) at `78084ece21b1725d193442a7619660625f3f735a` |
+| Source | `vendor/pyrowave` of [`karsyboy/pyroshine`](https://github.com/karsyboy/pyroshine) at `4f1a90b0cc6d2d58663ee29c8a3b8a80e55f3cc2` ([upstream PyroWave](https://github.com/Themaister/pyrowave) plus `vendor/pyrowave-patches/`) |
 | C API | `pyrowave-shared` 1.1.0; `app/app.pro` rejects other versions |
 | Granite | `53090429539bf3404250d18fe58db971f0907c04` via `checkout_granite.sh` |
 | Bitstream family | `186f0393` |
 
 The pin appears in [build-appimage.yml](../.github/workflows/build-appimage.yml),
 [release.yml](../.github/workflows/release.yml) and the build instructions; keep
-them identical. Both workflows and `scripts/build-pyrowave-appimage.sh` run the fork's
+them identical. Both workflows and `scripts/build-pyrowave-appimage.sh` run the vendored
 `checkout_granite.sh`, which applies its Granite patches, and the release workflows fail unless the packaged client links and
 bundles the PyroWave runtime and its license.
 
-The Pyroshine host pins a newer revision of the same fork with a different C
-API version. Host and client pins may differ as long as they share the
-block-format family; the golden-bitstream tests decode fixtures produced by
-both forks. When changing the pin, rerun those tests and the smoke test, and do
-not substitute upstream PyroWave 0.6 or an arbitrary newer ABI.
+The Pyroshine host may build a newer base or patch series than this pin. Host
+and client may differ as long as they share the block-format family; the
+golden-bitstream tests decode fixtures produced by both. When changing the pin,
+rerun those tests and the smoke test, and do not substitute unpatched upstream
+PyroWave or an arbitrary newer ABI.
 
 ## Renderer smoke test
 

@@ -1,5 +1,7 @@
 #include "vrrdiagnostics.h"
 
+#include "SDL_compat.h"
+
 #include <cstdio>
 
 namespace Vrr {
@@ -57,7 +59,9 @@ int formatOverlay(const PacingWorker::Stats& now, PacingWorker::Stats& last, con
     last = now;
     const TimingController::Stats& t = now.timing;
     return checked(snprintf(output, size_t(length),
-        "VRR: active (%s, %d Hz display, %d FPS stream)\n"
+        // Pacing is active; whether the panel scans out adaptively is not
+        // observable from the client, so the overlay never claims it.
+        "VRR pacing: active (%s, %d Hz display, %d FPS stream, panel adaptive sync not verified)\n"
         "VRR source: %.2f FPS | buffer %.2f/%.2f ms | queue %u/%d\n"
         "VRR intervals: quality %.2f%% | jerk >2 ms %.1f%% | target error %.2f ms\n"
         "VRR presents: late %.1f%% | latched %.0f%% | drops %llu (stale %llu) | arrival to present %.2f ms\n",
@@ -73,6 +77,14 @@ int formatFallback(FallbackReason reason, char* output, int length)
 {
     return checked(snprintf(output, size_t(length), "VRR: requested, fixed pacing (%s)\n",
                             fallbackReasonName(reason)), length);
+}
+
+void logStopStall(const char* call, uint64_t waitedUs)
+{
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "VRR: stopping presentation has waited %.1f s for the worker's %s call; "
+                "the window system or GPU driver is not making progress",
+                double(waitedUs) / 1e6, call);
 }
 
 int formatSummary(const char* title, const PacingWorker::Stats& now, PacingWorker::Stats& last,

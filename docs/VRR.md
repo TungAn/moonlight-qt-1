@@ -63,14 +63,19 @@ rate does not exceed it, and the platform has a VRR presenter (Linux with the
 Vulkan renderer). A qualified session prefers the Vulkan renderer (also for
 the startup probe, so the color range negotiated with the host matches
 playback), streams in desktop fullscreen even when the saved mode is windowed,
-and sends `clientVrrRequested=1`. The renderer must then offer an adaptive
-present mode and the pacing worker (and, for PyroWave, the decode thread) must
-start; otherwise the session keeps synchronized presentation with classic
-frame pacing, enabled even if the frame pacing checkbox is off. A renderer
-that already created its adaptive swapchain recreates it with FIFO first, and
-the stream fails to start if it cannot. The log and the performance overlay
-name the reason. A renderer recreated after a
-display change is requalified against the new display's refresh rate.
+and sends `clientVrrRequested=1`. The pacing worker (and, for PyroWave, the
+decode thread) must then start; otherwise the session keeps synchronized
+presentation with classic frame pacing, enabled even if the frame pacing
+checkbox is off. A renderer that already created a Mailbox or Immediate
+swapchain recreates it with FIFO first, and the stream fails to start if it
+cannot. The log and the performance overlay name the reason. A renderer
+recreated after a display change requalifies the VRR request against the new
+display, so a request rejected on the launch display (unknown or too low a
+refresh rate) qualifies once the window reaches a suitable one, and a
+qualified one picks up the new refresh rate. The host keeps the capture mode
+negotiated at launch; client pacing works against either. SDL 2 reports no
+event for a refresh-rate change on the same monitor, so that case keeps the
+previous rate until the renderer is recreated.
 
 ## Timing model
 
@@ -130,8 +135,9 @@ target = sourceTime + smoothing + playoutDelay + typicalPreparation
   more than 20 ms after it (the panel may be repeating a frame below its VRR
   range), is latched when the presenter synchronizes natively: it flips at the
   next refresh and never tears, without a software floor that could not
-  sustain a source at the refresh rate. Presenters that may tear (Vulkan
-  Immediate) enforce `previous flip + display period + guard` in software. A
+  sustain a source at the refresh rate. Presenters that would queue (Vulkan
+  FIFO) or may tear (Vulkan Immediate) enforce `previous flip + display
+  period + guard` in software. A
   latched flip's spacing anchor is `max(call, previous anchor + display period)`.
 - **Preparation lead.** Preparation starts when the frame is dequeued, inside
   the playout interval. The typical (p50) and p99 preparation times over the
@@ -157,16 +163,28 @@ For each frame the thread asks the controller for a decision, prepares the
 frame, waits for the target (an interruptible wait to 1 ms before, a sleep to
 150 µs before, then a bounded spin), re-reads the spacing floor, and presents.
 Stopping wakes every wait; the pacer stops the worker before the renderer is
-destroyed, and every queued frame is released exactly once.
+destroyed, and every queued frame is released exactly once. A presenter call
+already in progress (a swapchain acquire or GPU wait inside libplacebo) cannot
+be interrupted; stop joins it rather than abandoning a thread that uses
+renderer state, and logs which call it is waiting for once the join exceeds
+2 s, so a window system or driver that stops making progress is named in the
+log instead of looking like a client hang.
 
 ## Presenters
 
-**Vulkan (Linux).** The swapchain's present mode is chosen once per renderer:
-Mailbox on Wayland (synchronized, never tears, native protection) and Immediate
-on X11, KMSDRM and Gamescope (adaptive flips that may tear, software floor),
-falling back to the other when unsupported (Gamescope's WSI layer offers
-Mailbox, so frames there are latched natively). A surface offering neither is
-not VRR capable. Preparation renders the frame and overlays into a renderer-owned
+**Vulkan (Linux).** The swapchain's present mode is chosen once per renderer
+and stays synchronized, because VRR requires V-Sync and nothing the client can
+query shows whether the output is actually scanning out adaptively: a
+fixed-refresh panel, adaptive sync disabled in the compositor or display, and
+a windowed surface all look the same to the swapchain. Mailbox is used where
+offered (native protection; Gamescope's WSI layer offers it), else FIFO
+(software floor, which also keeps FIFO from queueing presents). Both follow
+the refresh adaptively when the compositor enables VRR for the window and
+stay tear-free when it does not. Immediate, which tears unless the panel is
+in adaptive mode, is used only with `PLVK_VRR_ALLOW_TEARING=1`, a diagnostic
+opt-in for outputs the user knows are adaptive (for example X11 with
+`VariableRefresh`), which trades tear safety for the lowest present latency.
+Preparation renders the frame and overlays into a renderer-owned
 image in the swapchain's format and colorimetry and waits for its GPU
 completion (at most 50 ms), so the decoder surface or PyroWave planes are
 released before the target wait and preparation time includes GPU work. At
@@ -174,8 +192,14 @@ the target the worker acquires a swapchain image, copies the prepared image
 into it and presents: holding an acquired image across the wait would let the
 next frame's GPU work delay the flip. The first frame, and the first after a
 colorspace change, is rendered at present time because the swapchain's
-colorimetry is not yet known. Resizes scale the prepared image for one frame;
-renderer failures request the usual device reset.
+colorimetry is not yet known. Resizes scale the prepared image for one frame.
+A failed render is never presented as a healthy frame: a failed preparation
+drops the frame (after the GPU finished any work that read the source), and
+a failure at present time still submits the acquired image, cleared to the
+background, but counts the frame as not presented. Three consecutive render
+failures request the usual renderer reset, once per renderer, so a failure
+that survives recreation cannot reset on every frame. GPU loss and swapchain
+failures request the reset at once.
 
 Submission is not proof of an adaptive refresh: whether the panel varies its
 refresh depends on the compositor's VRR policy (for example KDE's "Adaptive
@@ -214,8 +238,10 @@ removes delivery jitter.
 
 The performance overlay adds:
 
-- state, present mode, display refresh and stream frame rate, or the fallback
-  reason;
+- pacing state ("VRR pacing: active"), present mode, display refresh and
+  stream frame rate, or the fallback reason. The overlay states that the
+  panel's adaptive sync is not verified: an active pacing path is not proof
+  that the display varies its refresh;
 - source frame rate, playout delay and its maximum, queue depth;
 - interval quality (the buffer's score), share of presented intervals more than
   2 ms from their intended spacing, mean submit error against the target;
@@ -242,8 +268,11 @@ Unit tests (`ctest --test-dir build/tests`):
   near the throughput deficit); Reduce judder; RTP wrap; reconnect rebase;
   lossy PyroWave frames.
 - `vrr-worker`: threaded worker with a fake presenter: ordering and release of
-  every frame, bounded queue under a stalled presenter, release on stop, and
-  presents on target with arrival jitter.
+  every frame, bounded queue under a stalled presenter, release on stop,
+  presents on target with arrival jitter, and a stop during a blocked present
+  that reports the stall, still joins and releases every frame once.
+- `vrr-timing` also covers the present-mode policy: Mailbox, else FIFO, and
+  Immediate only when tearing is explicitly allowed.
 - `app/tests/streamingpreferences_test.pro`: defaults, per-profile persistence,
   presets and custom values.
 
@@ -257,6 +286,11 @@ Hardware checks, which unit tests cannot replace:
 2. Change the game's frame limiter during the stream, load the host briefly,
    and add network jitter: no burst after late frames, recovery within seconds.
 3. Disconnect and reconnect, move the window between displays with different
-   refresh rates, resize, and toggle HDR: no persistent stutter or stale timing.
-4. Repeat against a standard Moonlight host (Sunshine) and with PyroWave,
+   refresh rates (including from a 60 Hz display that rejected a 120 FPS
+   request to a 120 Hz one), resize, and toggle HDR: no persistent stutter or
+   stale timing.
+4. Repeat on a fixed-refresh display and with adaptive sync disabled in the
+   compositor: no tearing (FIFO or Mailbox), and the overlay still reports
+   adaptive sync as not verified.
+5. Repeat against a standard Moonlight host (Sunshine) and with PyroWave,
    H.264, HEVC and AV1.

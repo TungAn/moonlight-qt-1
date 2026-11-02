@@ -177,6 +177,12 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         updateKeyboardGrabState();
         break;
 
+    case KeyComboToggleMicrophone:
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected microphone toggle combo");
+        Session::get()->toggleMicrophone();
+        break;
+
     default:
         Q_UNREACHABLE();
     }

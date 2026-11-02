@@ -47,14 +47,21 @@ jobs:
             git -C moonlight-common-c/moonlight-common-c apply --verbose "$GITHUB_WORKSPACE/$patch"
           done
 
-      - name: Check out the patched PyroWave API
+      # PyroWave is vendored in Pyroshine (vendor/pyrowave: upstream plus its
+      # patch series); build the decoder from that tree at a pinned commit.
+      - name: Check out the vendored PyroWave
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: karsyboy/pyrowave
-          ref: 78084ece21b1725d193442a7619660625f3f735a
-          path: deps/PyroWave
+          repository: karsyboy/pyroshine
+          ref: 4f1a90b0cc6d2d58663ee29c8a3b8a80e55f3cc2
+          path: deps/pyroshine
+          sparse-checkout: vendor/pyrowave
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Use the vendored PyroWave tree
+        shell: bash
+        run: mv deps/pyroshine/vendor/pyrowave deps/PyroWave
 
       - name: Install build dependencies
         shell: bash

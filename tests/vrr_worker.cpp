@@ -4,9 +4,11 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <mutex>
 #include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -157,6 +159,75 @@ void testPresentsFollowTargets()
     assert(stats.intervalJerks * 20 < stats.intervals);
 }
 
+std::atomic<int> g_StallReports{0};
+const char* g_StallCall = nullptr;
+
+void recordStall(const char* call, uint64_t)
+{
+    g_StallCall = call;
+    ++g_StallReports;
+}
+
+// Presenter whose present blocks like an acquire on a compositor that stopped
+// making progress, until the test releases it.
+struct BlockingPresenter : FakePresenter {
+    std::mutex gate;
+    std::condition_variable opened;
+    bool open = false;
+    std::atomic<bool> blocked{false};
+
+    PresentResult vrrPresent(bool latched) override
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        blocked = true;
+        opened.wait(lock, [this] { return open; });
+        return FakePresenter::vrrPresent(latched);
+    }
+};
+
+// Stop cannot interrupt a presenter call: it reports the stall, names the
+// blocking call, and still joins the thread (never abandons it) before
+// releasing every frame exactly once.
+void testStopReportsBlockedPresenter()
+{
+    BlockingPresenter presenter;
+    presenter.prepareDelayUs = 0;
+    PacingWorker worker(config(), &presenter, nowUs);
+    worker.setStopStallReporter(recordStall, 50000);
+    assert(worker.start());
+    for (int i = 1; i <= 3; ++i) {
+        submit(worker, presenter, i);
+    }
+    while (!presenter.blocked) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::thread opener([&presenter] {
+        while (g_StallReports == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        std::lock_guard<std::mutex> lock(presenter.gate);
+        presenter.open = true;
+        presenter.opened.notify_all();
+    });
+    worker.stop();
+    opener.join();
+    assert(g_StallReports == 1);
+    assert(std::string(g_StallCall) == "present");
+    assert(presenter.outstanding == 0);
+    std::lock_guard<std::mutex> guard(presenter.lock);
+    for (int i = 1; i <= 3; ++i) {
+        assert(presenter.released.count(i) == 1);
+    }
+
+    // A prompt stop reports nothing.
+    FakePresenter idle;
+    PacingWorker quick(config(), &idle, nowUs);
+    quick.setStopStallReporter(recordStall, 50000);
+    assert(quick.start());
+    quick.stop();
+    assert(g_StallReports == 1);
+}
+
 }
 
 int main()
@@ -164,6 +235,7 @@ int main()
     testSteadyStream();
     testBoundedUnderPressure();
     testPresentsFollowTargets();
+    testStopReportsBlockedPresenter();
     std::puts("vrr-worker: all tests passed");
     return 0;
 }

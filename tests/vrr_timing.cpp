@@ -465,6 +465,22 @@ void testLossDoesNotTeachTheBuffer()
     assert(stats.playoutDelayUs <= 8333);
 }
 
+// V-Sync is required for VRR, so the present mode never tears unless the user
+// explicitly allowed it; Mailbox is latched natively, FIFO uses the floor.
+void testSynchronizedPresentMode()
+{
+    PresentChoice c = chooseSynchronizedPresentMode(true, true, false);
+    assert(c.mode == PresentMode::Mailbox && c.protection == PresentProtection::Native);
+    c = chooseSynchronizedPresentMode(false, true, false);
+    assert(c.mode == PresentMode::Fifo && c.protection == PresentProtection::SoftwareFloor);
+    c = chooseSynchronizedPresentMode(false, false, false);
+    assert(c.mode == PresentMode::Fifo && c.protection == PresentProtection::SoftwareFloor);
+    c = chooseSynchronizedPresentMode(true, true, true);
+    assert(c.mode == PresentMode::Immediate && c.protection == PresentProtection::SoftwareFloor);
+    c = chooseSynchronizedPresentMode(true, false, true);
+    assert(c.mode == PresentMode::Mailbox && c.protection == PresentProtection::Native);
+}
+
 }
 
 int main()
@@ -484,6 +500,7 @@ int main()
     testRtpWrap();
     testReconnectRebases();
     testLossDoesNotTeachTheBuffer();
+    testSynchronizedPresentMode();
     std::puts("vrr-timing: all tests passed");
     return 0;
 }

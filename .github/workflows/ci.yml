@@ -23,16 +23,16 @@ jobs:
         with:
           persist-credentials: false
 
-      # Every workflow builds the same PyroWave revision, and the documents
-      # name it (AGENTS.md: keep the copies identical).
+      # Every workflow builds PyroWave from the same Pyroshine commit, and the
+      # documents name it (AGENTS.md: keep the copies identical).
       - name: Check that every copy of the pin agrees
         shell: bash
         run: |
           set -euo pipefail
-          pins="$(awk '/repository: karsyboy\/pyrowave$/ { want = 1; next }
+          pins="$(awk '/repository: karsyboy\/pyroshine$/ { want = 1; next }
                        want && /ref:/ { print $2; want = 0 }' .github/workflows/*.yml | sort -u)"
           if [[ "$(grep -c . <<<"${pins}")" != 1 || ! "${pins}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Workflows check out different PyroWave revisions:"
+            echo "::error::Workflows check out PyroWave from different Pyroshine commits:"
             echo "${pins}"
             exit 1
           fi
@@ -81,7 +81,8 @@ jobs:
       - name: Build and run
         run: |
           cmake -S moonlight-common-c/moonlight-common-c -B build/common-c-tests \
-            -DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON
+            -DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON \
+            -DMICROPHONE_TESTS=ON
           cmake --build build/common-c-tests --parallel
           ctest --test-dir build/common-c-tests --output-on-failure
 
@@ -134,14 +135,22 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Check out the patched PyroWave API
+      # PyroWave is vendored in Pyroshine (vendor/pyrowave: upstream plus its
+      # patch series); build the decoder from that tree at a pinned commit.
+      - name: Check out the vendored PyroWave
         if: matrix.pyrowave
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: karsyboy/pyrowave
-          ref: 78084ece21b1725d193442a7619660625f3f735a
-          path: deps/PyroWave
+          repository: karsyboy/pyroshine
+          ref: 4f1a90b0cc6d2d58663ee29c8a3b8a80e55f3cc2
+          path: deps/pyroshine
+          sparse-checkout: vendor/pyrowave
           persist-credentials: false
+
+      - name: Use the vendored PyroWave tree
+        if: matrix.pyrowave
+        shell: bash
+        run: mv deps/pyroshine/vendor/pyrowave deps/PyroWave
 
       # The PyroWave C API uses Vulkan 1.4 types; Ubuntu 24.04 ships 1.3
       # headers, so use the LunarG SDK version the release build uses.

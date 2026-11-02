@@ -13,14 +13,14 @@ fail()
 }
 
 SOURCE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PYROWAVE_SOURCE=${PYROWAVE_SOURCE:-"$SOURCE_ROOT/../pyrowave"}
+PYROWAVE_SOURCE=${PYROWAVE_SOURCE:-"$SOURCE_ROOT/deps/PyroWave"}
 PYROWAVE_SOURCE=$(readlink -f "$PYROWAVE_SOURCE")
 PYROWAVE_BUILD=${PYROWAVE_BUILD:-"$SOURCE_ROOT/build/pyrowave-appimage"}
 PYROWAVE_PREFIX=${PYROWAVE_PREFIX:-"$SOURCE_ROOT/build/pyrowave-appimage-prefix"}
 
-[ -f "$PYROWAVE_SOURCE/CMakeLists.txt" ] || fail "Set PYROWAVE_SOURCE to the patched PyroWave source tree"
+[ -f "$PYROWAVE_SOURCE/CMakeLists.txt" ] || fail "Set PYROWAVE_SOURCE to a copy of Pyroshine's vendor/pyrowave"
 
-# Idempotent: pins Granite and applies (or verifies) the fork's Granite patches.
+# Idempotent: pins Granite and re-applies the vendored Granite patches.
 (cd "$PYROWAVE_SOURCE" && ./checkout_granite.sh)
 [ "$(git -C "$PYROWAVE_SOURCE/Granite" rev-parse HEAD 2>/dev/null)" = "53090429539bf3404250d18fe58db971f0907c04" ] || \
   fail "PyroWave's pinned Granite checkout is missing or incorrect"

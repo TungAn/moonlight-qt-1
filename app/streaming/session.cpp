@@ -219,6 +219,7 @@ void Session::clConnectionStatusUpdate(int connectionStatus)
         break;
     case CONN_STATUS_OKAY:
         s_ActiveSession->m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+        s_ActiveSession->updateMicrophoneStatus();
         break;
     }
 }
@@ -638,6 +639,8 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_UnexpectedTermination(true), // Failure prior to streaming is unexpected
       m_InputHandler(nullptr),
       m_MouseEmulationRefCount(0),
+      m_MicrophoneMuted(false),
+      m_MicrophoneStatusShown(false),
       m_FlushingWindowEventsRef(0),
       m_ShouldExit(false),
       m_AsyncConnectionSuccess(false),
@@ -826,6 +829,9 @@ bool Session::initialize(QQuickWindow* qtWindow)
         break;
     }
 
+    // Set up the host's microphone stream; sending starts with the stream.
+    m_StreamConfig.enableMic = m_Preferences->enableMicrophone;
+
     LiInitializeAudioCallbacks(&m_AudioCallbacks);
     m_AudioCallbacks.init = arInit;
     m_AudioCallbacks.cleanup = arCleanup;
@@ -949,9 +955,8 @@ bool Session::initialize(QQuickWindow* qtWindow)
             // to allow decoding via VideoToolbox on macOS. Since we don't
             // have fixup code for HEVC, just avoid it if GFE is too old.
             QVector<int> gfeVersion = NvHTTP::parseQuad(m_Computer->gfeVersion);
-            if (gfeVersion.isEmpty() || // Very old versions don't have GfeVersion at all
-                    gfeVersion[0] < 3 ||
-                    (gfeVersion[0] == 3 && gfeVersion[1] < 11)) {
+            if (gfeVersion.value(0) < 3 ||
+                (gfeVersion.value(0) == 3 && gfeVersion.value(1) < 11)) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "Disabling HEVC on macOS due to old GFE version");
                 m_SupportedVideoFormats.removeByMask(VIDEO_FORMAT_MASK_H265);
@@ -1563,34 +1568,48 @@ void Session::getWindowDimensions(int& x, int& y,
 {
     const int displayIndex = streamDisplayIndex();
 
+    // Get the usable display bounds
     SDL_Rect usableBounds;
-    if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) == 0) {
-        // If the stream resolution fits within the usable display area, use it directly
-        if (m_StreamConfig.width <= usableBounds.w &&
-            m_StreamConfig.height <= usableBounds.h) {
-            width = m_StreamConfig.width;
-            height = m_StreamConfig.height;
-        } else {
-            // Otherwise, use 80% of usable bounds and preserve aspect ratio
-            SDL_Rect src, dst;
-            src.x = src.y = dst.x = dst.y = 0;
-            src.w = m_StreamConfig.width;
-            src.h = m_StreamConfig.height;
-
-            dst.w = ((int)(usableBounds.w * 0.80f)) & ~0x1;  // even width
-            dst.h = ((int)(usableBounds.h * 0.80f)) & ~0x1;  // even height
-
-            StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
-
-            width = dst.w;
-            height = dst.h;
-        }
-    }
-    else {
+    if (SDL_GetDisplayUsableBounds(displayIndex, &usableBounds) != 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "SDL_GetDisplayUsableBounds() failed: %s",
                      SDL_GetError());
+        SDL_zero(usableBounds);
+    }
 
+    // Use the usable display bounds if they are valid
+    if (usableBounds.w != 0 &&
+            WMUtils::hasDisplayUsableBounds() &&
+            m_StreamConfig.width <= usableBounds.w &&
+            m_StreamConfig.height <= usableBounds.h) {
+        // We fit pixel-perfect in the usable area, so don't scale at all
+        width = m_StreamConfig.width;
+        height = m_StreamConfig.height;
+    }
+    else if (usableBounds.w != 0 || SDL_GetDisplayBounds(displayIndex, &usableBounds) == 0) {
+        // Otherwise, use 80% of usable bounds and preserve aspect ratio
+        SDL_Rect src, dst;
+        src.x = src.y = dst.x = dst.y = 0;
+        src.w = m_StreamConfig.width;
+        src.h = m_StreamConfig.height;
+
+        dst.w = ((int)(usableBounds.w * 0.80f)) & ~0x1;  // even width
+        dst.h = ((int)(usableBounds.h * 0.80f)) & ~0x1;  // even height
+
+        StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
+
+        // Only scale the size down, never up
+        if (m_StreamConfig.width >= dst.w || m_StreamConfig.height >= dst.h) {
+            width = dst.w;
+            height = dst.h;
+        }
+        else {
+            width = m_StreamConfig.width;
+            height = m_StreamConfig.height;
+        }
+    }
+    else {
+        // Oh well, hope for the best
         width = m_StreamConfig.width;
         height = m_StreamConfig.height;
     }
@@ -1755,6 +1774,77 @@ void Session::notifyMouseEmulationMode(bool enabled)
     }
     else {
         m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+        updateMicrophoneStatus();
+    }
+}
+
+void Session::startMicrophone()
+{
+    if (!m_Preferences->enableMicrophone || m_MicrophoneMuted || m_Microphone.isRunning()) {
+        return;
+    }
+    if (!LiIsMicrophoneStreamActive()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Microphone: the host did not set up an encrypted microphone stream");
+        return;
+    }
+
+    MicrophoneStream::EchoCancellation echo = MicrophoneStream::EchoCancellation::Automatic;
+    switch (m_Preferences->micEchoCancel) {
+    case StreamingPreferences::MEC_AUTO:
+        echo = MicrophoneStream::EchoCancellation::Automatic;
+        break;
+    case StreamingPreferences::MEC_ON:
+        echo = MicrophoneStream::EchoCancellation::On;
+        break;
+    case StreamingPreferences::MEC_OFF:
+        echo = MicrophoneStream::EchoCancellation::Off;
+        break;
+    }
+    if (m_Microphone.start(echo)) {
+        m_MicrophoneStatus.clear();
+    }
+    else {
+        // Muted until the user tries again with the shortcut.
+        m_MicrophoneMuted = true;
+        m_MicrophoneStatus = tr("Microphone unavailable: %1").arg(m_Microphone.error());
+    }
+    updateMicrophoneStatus();
+}
+
+void Session::toggleMicrophone()
+{
+    if (!m_Preferences->enableMicrophone || !LiIsMicrophoneStreamActive()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Microphone: not available in this stream");
+        return;
+    }
+    m_MicrophoneMuted = !m_MicrophoneMuted;
+    if (m_MicrophoneMuted) {
+        m_Microphone.stop();
+        m_MicrophoneStatus = tr("Microphone muted");
+        updateMicrophoneStatus();
+    }
+    else {
+        startMicrophone();
+    }
+}
+
+void Session::updateMicrophoneStatus()
+{
+    // Mouse emulation owns the status overlay while it is active.
+    if (m_MouseEmulationRefCount > 0) {
+        return;
+    }
+    if (m_MicrophoneMuted && !m_MicrophoneStatus.isEmpty()) {
+        m_OverlayManager.updateOverlayText(Overlay::OverlayStatusUpdate,
+                                           qPrintable(tr("%1\nPress Ctrl+Alt+Shift+U to unmute").arg(m_MicrophoneStatus)));
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, true);
+        m_MicrophoneStatusShown = true;
+    }
+    else if (m_MicrophoneStatusShown) {
+        m_OverlayManager.setOverlayState(Overlay::OverlayStatusUpdate, false);
+        m_MicrophoneStatusShown = false;
     }
 }
 
@@ -2221,6 +2311,9 @@ void Session::exec()
     // Toggle the stats overlay if requested by the user
     m_OverlayManager.setOverlayState(Overlay::OverlayDebug, m_Preferences->showPerformanceOverlay);
 
+    // Start sending the microphone now that the stream is up
+    startMicrophone();
+
     // Switch to async logging mode when we enter the SDL loop
     StreamUtils::enterAsyncLoggingMode();
 
@@ -2268,6 +2361,17 @@ void Session::exec()
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "Quit event received");
             goto DispatchDeferredCleanup;
+
+        case SDL_AUDIODEVICEREMOVED:
+            // A lost microphone mutes it; the shortcut tries again.
+            if (event.adevice.iscapture && m_Microphone.isDevice(event.adevice.which)) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Microphone: the capture device was removed");
+                m_Microphone.stop();
+                m_MicrophoneMuted = true;
+                m_MicrophoneStatus = tr("Microphone disconnected");
+                updateMicrophoneStatus();
+            }
+            break;
 
         case SDL_USEREVENT:
             switch (event.user.code) {
@@ -2479,13 +2583,14 @@ void Session::exec()
                     enableVsync = false;
                 }
 
-                // Requalify VRR for the window's current display: a renderer
-                // recreated after a display change must not keep the old
-                // display's refresh rate.
-                VRR_PARAMETERS vrr = {};
-                if (m_Vrr.enabled) {
-                    vrr = qualifyVrr(SDL_GetWindowDisplayIndex(m_Window), m_VrrFallbackReason);
-                }
+                // Requalify the VRR request for the window's current display:
+                // a renderer recreated after a display change must not keep the
+                // old display's refresh rate, and a request rejected on the
+                // launch display (unknown or too low a refresh rate) qualifies
+                // once the window reaches a suitable one. The host's capture
+                // mode stays what was negotiated at launch; client pacing
+                // works against either.
+                VRR_PARAMETERS vrr = qualifyVrr(SDL_GetWindowDisplayIndex(m_Window), m_VrrFallbackReason);
 
                 // Choose a new decoder (hopefully the same one, but possibly
                 // not if a GPU was removed or something). A VRR request that
@@ -2605,6 +2710,9 @@ DispatchDeferredCleanup:
     if (QGuiApplication::platformName() == "eglfs") {
         QGuiApplication::restoreOverrideCursor();
     }
+
+    // Stop sending the microphone before the connection goes away
+    m_Microphone.stop();
 
     // Raise any keys that are still down
     m_InputHandler->raiseAllKeys();

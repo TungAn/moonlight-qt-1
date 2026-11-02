@@ -79,16 +79,24 @@ switch. It starts/resumes an idle or already matching target, conditionally
 terminates only the expected different application, and refuses any other
 running app. Integrations must ask the user before setting this option and
 must not replay it on reconnect. Interactive switch dialogs also pin the
-application seen when requesting confirmation. A matching Pyroshine build is
-required to check `expectedAppId` under the host lifecycle lock; server refusal
-is reported as a failure without a forced cancellation fallback.
+application seen when requesting confirmation. The host checks `expectedAppId`
+under its lifecycle lock; server refusal is reported as a failure without a
+forced cancellation fallback.
 
 Integrations preserve games by launching with `--no-quit-after`. Explicit
 `quit HOST --app-id ID --integration-events` checks the current application and
 sends `expectedAppId` to Pyroshine's authenticated `/cancel`. A different current
 application returns a conflict; standard quit without an ID keeps its behavior.
 Conditional cancellation identifies applications, not successive instances of
-the same application. Use a matching Pyroshine build for the host-side check.
+the same application.
+
+Before any conditional `/cancel`, Pyrolight reads `/serverinfo` and requires
+`<PyroshineConditionalCancel>1</PyroshineConditionalCancel>`. Hosts without it
+(other servers and Pyroshine builds before the element) ignore `expectedAppId`
+and would stop whatever is running, so Pyrolight sends nothing and fails with
+"This host cannot end only the expected game. Update Pyroshine on the host; no
+game was ended." Streaming, resuming and the unconditional quit are unchanged
+on those hosts.
 
 ## Catalog, artwork and network tools
 

@@ -49,7 +49,7 @@ inline const char* fallbackReasonName(FallbackReason reason)
     case FallbackReason::UnsupportedRenderer:
         return "the selected renderer cannot present VRR frames";
     case FallbackReason::NoAdaptivePresentMode:
-        return "no Mailbox or Immediate presentation mode";
+        return "no synchronized presentation mode";
     case FallbackReason::InitializationFailed:
         return "VRR presentation failed to initialize";
     }
@@ -62,10 +62,56 @@ enum class PresentProtection : uint8_t {
     // period waits for the next refresh and never tears (Vulkan Mailbox,
     // DXGI interval 1). No software spacing floor is needed for it.
     Native,
-    // Presentation may tear (Vulkan Immediate): the controller enforces one
-    // display period plus a guard between submissions in software.
+    // The controller enforces one display period plus a guard between
+    // submissions in software: Vulkan FIFO, which would otherwise queue
+    // presents behind each other, and an explicitly allowed Immediate,
+    // whose flips may tear when the panel is not in adaptive mode.
     SoftwareFloor,
 };
+
+enum class PresentMode : uint8_t {
+    Fifo,
+    Mailbox,
+    Immediate,
+};
+
+struct PresentChoice {
+    PresentMode mode = PresentMode::Fifo;
+    PresentProtection protection = PresentProtection::SoftwareFloor;
+};
+
+// VRR requires V-Sync, so the chosen mode must never tear on its own. No
+// portable query tells whether the output is actually scanning out
+// adaptively (a fixed-refresh panel, adaptive sync disabled in the
+// compositor or a windowed surface all look the same to the swapchain), so
+// Immediate, which only avoids tearing while adaptive scanout is active, is
+// used only when the user explicitly allows tearing. Mailbox and FIFO both
+// follow the adaptive refresh when the compositor enables it and stay
+// synchronized when it does not. FIFO is always available.
+inline PresentChoice chooseSynchronizedPresentMode(bool mailboxSupported, bool immediateSupported,
+                                                   bool tearingAllowed)
+{
+    if (tearingAllowed && immediateSupported) {
+        return { PresentMode::Immediate, PresentProtection::SoftwareFloor };
+    }
+    if (mailboxSupported) {
+        return { PresentMode::Mailbox, PresentProtection::Native };
+    }
+    return { PresentMode::Fifo, PresentProtection::SoftwareFloor };
+}
+
+inline const char* presentModeName(PresentMode mode)
+{
+    switch (mode) {
+    case PresentMode::Fifo:
+        return "FIFO";
+    case PresentMode::Mailbox:
+        return "Mailbox";
+    case PresentMode::Immediate:
+        return "Immediate";
+    }
+    return "unknown";
+}
 
 struct SessionConfig {
     int displayRefreshHz = 0;

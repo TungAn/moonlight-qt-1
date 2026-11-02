@@ -33,6 +33,13 @@ target_link_libraries(pyrowave-color PRIVATE PkgConfig::PLACEBO)
 target_compile_options(pyrowave-color PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
 add_test(NAME pyrowave-color COMMAND pyrowave-color)
 
+add_executable(plvk-color-range plvk_color_range.cpp)
+target_compile_features(plvk-color-range PRIVATE cxx_std_11)
+target_include_directories(plvk-color-range PRIVATE ../app)
+target_link_libraries(plvk-color-range PRIVATE PkgConfig::PLACEBO)
+target_compile_options(plvk-color-range PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
+add_test(NAME plvk-color-range COMMAND plvk-color-range)
+
 foreach(frame_test IN ITEMS pyrowave-frame pyrowave-frame-winmacros)
     add_executable(${frame_test} pyrowave_frame.cpp)
     target_compile_features(${frame_test} PRIVATE cxx_std_11)

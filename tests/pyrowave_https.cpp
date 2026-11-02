@@ -26,6 +26,10 @@ int main(int argc, char** argv)
             const bool supported = NvHTTP::getXmlString(info, "PyroWaveBandwidthProbeBytes").toLongLong() == PyroWaveBandwidth::ProbeBytes;
             return supported == (expected == "supported") ? 0 : 1;
         }
+        if (operation == "cancel") {
+            http.quitApp(42);
+            return expected == "success" ? 0 : 1;
+        }
         // One warm-up followed by three independent bounded measurements.
         for (int i = 0; i < 4; ++i) {
             if (http.probePyroWaveDownloadKbps() <= 0) return 1;

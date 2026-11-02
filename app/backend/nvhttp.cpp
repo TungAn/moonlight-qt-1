@@ -270,10 +270,21 @@ NvHTTP::startApp(QString verb,
 void
 NvHTTP::quitApp(int expectedAppId)
 {
+    QString arguments;
+    if (expectedAppId != 0) {
+        // Hosts that do not advertise the check ignore expectedAppId and stop
+        // whatever is running, so a conditional quit must never reach them.
+        if (getXmlString(getServerInfo(NvHTTP::NVLL_ERROR), "PyroshineConditionalCancel").toInt() < 1) {
+            throw GfeHttpResponseException(501, "This host cannot end only the expected game. "
+                                                "Update Pyroshine on the host; no game was ended.");
+        }
+        arguments = "expectedAppId=" + QString::number(expectedAppId);
+    }
+
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    "cancel",
-                                   expectedAppId == 0 ? QString() : "expectedAppId=" + QString::number(expectedAppId),
+                                   arguments,
                                    QUIT_TIMEOUT_MS);
 
     qInfo() << "Quit response:" << response;
@@ -539,10 +550,13 @@ NvHTTP::openConnection(QUrl baseUrl,
     request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 #endif
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+
     // Use fine-grained idle timeouts to avoid calling QNetworkAccessManager::clearAccessCache(),
     // which tears down the NAM's global thread each time. We must not keep persistent connections
     // or GFE will puke.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, -1);
+#elif QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
     request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, 0);
 #endif
 
@@ -562,13 +576,35 @@ NvHTTP::openConnection(QUrl baseUrl,
         });
     }
 
-    // Run the request with a timeout if requested
     QEventLoop loop;
+
+    // Connect the quit signals
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, &loop, &QEventLoop::quit);
+
+    // Enforce a transfer timeout if requested
     if (timeoutMs) {
         QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
     }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+    // Time the request to distinguish a slow response from an unreachable host
+    auto* connectTimer = new QTimer(reply);
+    connectTimer->setSingleShot(true);
+    connect(connectTimer, &QTimer::timeout, reply, [reply, logLevel, url]() {
+        if (!reply->isFinished()) {
+            if (logLevel >= NvLogLevel::NVLL_ERROR) {
+                qWarning() << "Aborting timed out connection for" << url.toString();
+            }
+
+            reply->setProperty("timeout_reason", "connection_timeout");
+            reply->abort();
+        }
+    });
+    connect(reply, &QNetworkReply::requestSent, connectTimer, &QTimer::stop);
+    connectTimer->start(REQUEST_TIMEOUT_MS);
+#endif
+
     if (logLevel >= NvLogLevel::NVLL_VERBOSE) {
         qInfo() << "Executing request:" << url.toString();
     }
@@ -634,7 +670,11 @@ NvHTTP::openConnection(QUrl baseUrl,
             throw exception;
         }
         else if (reply->error() == QNetworkReply::OperationCanceledError) {
-            QtNetworkReplyException exception(QNetworkReply::TimeoutError, "Request timed out");
+            QString reason = reply->property("timeout_reason").toString();
+            QtNetworkReplyException exception(QNetworkReply::TimeoutError,
+                                              reason == "connection_timeout" ?
+                                                  "Connection timed out" :
+                                                  "Request timed out");
             delete reply;
             throw exception;
         }
@@ -644,6 +684,12 @@ NvHTTP::openConnection(QUrl baseUrl,
             throw exception;
         }
     }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+    // The requestSent signal must have stopped the timer for any successful request,
+    // otherwise we could falsely time out a slow response when we connected fine.
+    Q_ASSERT(!connectTimer->isActive());
+#endif
 
     return reply;
 }

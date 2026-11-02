@@ -200,6 +200,7 @@ SOURCES += \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
     streaming/audio/audio.cpp \
+    streaming/audio/microphone.cpp \
     streaming/audio/renderers/sdlaud.cpp \
     gui/computermodel.cpp \
     gui/appmodel.cpp \
@@ -251,6 +252,7 @@ HEADERS += \
     streaming/input/gamepadidentity.h \
     streaming/input/gamepadfeedback.h \
     streaming/session.h \
+    streaming/audio/microphone.h \
     streaming/audio/renderers/renderer.h \
     streaming/audio/renderers/sdl.h \
     gui/computermodel.h \
@@ -380,7 +382,8 @@ libplacebo {
         streaming/video/ffmpeg-renderers/plvk.cpp \
         streaming/video/ffmpeg-renderers/plvk_c.c
     HEADERS += \
-        streaming/video/ffmpeg-renderers/plvk.h
+        streaming/video/ffmpeg-renderers/plvk.h \
+        streaming/video/ffmpeg-renderers/plvkcolorrange.h
 
     macx {
         SOURCES += streaming/video/ffmpeg-renderers/plvk_objc.mm
@@ -611,11 +614,15 @@ macx {
 
 CI_VERSION = $$(CI_VERSION)
 isEmpty(CI_VERSION) {
-    VERSION = "$$cat(version.txt)"
+    FULL_VERSION = "$$cat(version.txt)"
 } else {
-    VERSION = "$$CI_VERSION"
+    FULL_VERSION = "$$CI_VERSION"
 }
-DEFINES += VERSION_STR=\\\"$$VERSION\\\"
+# The UI shows the full version (6.2.8-prerelease.1). qmake writes VERSION into
+# the Windows VERSIONINFO resource, which the MSI takes its version from, and
+# both accept only numbers, so VERSION drops a prerelease suffix.
+VERSION = $$section(FULL_VERSION, -, 0, 0)
+DEFINES += VERSION_STR=\\\"$$FULL_VERSION\\\"
 
 # Explicit opt-in, reproducible standalone dependency (see docs/PYROWAVE.md).
 enable-pyrowave {
@@ -628,7 +635,7 @@ enable-pyrowave {
         INCLUDEPATH += $$PYROWAVE_PREFIX/include
         LIBS += -L$$PYROWAVE_PREFIX/lib -lpyrowave-shared
     } else:linux {
-        !packagesExist("pyrowave-shared = 1.1.0"): error("PyroWave requires the karsyboy/pyrowave fork API 1.1.0")
+        !packagesExist("pyrowave-shared = 1.1.0"): error("PyroWave requires the C API 1.1.0 of Pyroshine's vendor/pyrowave")
         PKGCONFIG += pyrowave-shared
         INCLUDEPATH += $$system(pkg-config --variable=prefix pyrowave-shared)/include
     } else {

@@ -12,7 +12,9 @@
            Version="!(bind.fileVersion.MoonlightExe)"
            Manufacturer="Pyrolight contributors"
            UpgradeCode="a577db46-36d7-4200-8d2f-c2aff43ee2f9">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." Schedule="afterInstallInitialize" />
+    <!-- A prerelease and its release share a numeric version (6.2.8), so the
+         release must upgrade a same-version installation. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of [ProductName] is already installed." Schedule="afterInstallInitialize" />
     <MediaTemplate CompressionLevel="high" EmbedCab="yes" />
 
     <Component Id="MoonlightShortcuts" Directory="INSTALLFOLDER">

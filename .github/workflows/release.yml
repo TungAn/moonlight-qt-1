@@ -1,10 +1,15 @@
 ---
 name: Release Pyrolight
 
+# Prerelease tags (vX.Y.Z-prerelease[.N]) are built by prerelease.yml, which
+# calls this workflow; they are published as GitHub prereleases and reach the
+# [pyrowave] repository as pyrolight-prerelease-bin.
 on:
   push:
     tags:
       - 'v*'
+      - '!v*prerelease*'
+  workflow_call:
 
 permissions:
   contents: read
@@ -20,6 +25,9 @@ jobs:
     outputs:
       release_tag: ${{ steps.version.outputs.release_tag }}
       release_version: ${{ steps.version.outputs.release_version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      deb_version: ${{ steps.version.outputs.deb_version }}
+      arch_version: ${{ steps.version.outputs.arch_version }}
     steps:
       - name: Validate and export version
         id: version
@@ -28,12 +36,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "${SOURCE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "Release tags must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH.BUILD." >&2
+          version="${SOURCE_TAG#v}"
+          if [[ "${SOURCE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            prerelease=false
+          # Prereleases are SemVer so nfpm orders them before the release:
+          # 6.2.8-prerelease.1 is 6.2.8~prerelease.1 in deb/rpm and
+          # 6.2.8prerelease.1 in pacman.
+          elif [[ "${SOURCE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-prerelease(\.[0-9]+)?$ ]]; then
+            prerelease=true
+          else
+            echo "Release tags must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH.BUILD;" \
+              "prerelease tags vMAJOR.MINOR.PATCH-prerelease or vMAJOR.MINOR.PATCH-prerelease.N." >&2
             exit 1
           fi
-          echo "release_tag=${SOURCE_TAG}" >> "${GITHUB_OUTPUT}"
-          echo "release_version=${SOURCE_TAG#v}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "release_tag=${SOURCE_TAG}"
+            echo "release_version=${version}"
+            echo "prerelease=${prerelease}"
+            echo "deb_version=${version/-/\~}"
+            echo "arch_version=${version/-/}"
+          } >> "${GITHUB_OUTPUT}"
 
   windows:
     name: Windows x64 installer and portable build
@@ -53,14 +75,21 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out the patched PyroWave API
+      # PyroWave is vendored in Pyroshine (vendor/pyrowave: upstream plus its
+      # patch series); build the decoder from that tree at a pinned commit.
+      - name: Check out the vendored PyroWave
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: karsyboy/pyrowave
-          ref: 78084ece21b1725d193442a7619660625f3f735a
-          path: deps/PyroWave
+          repository: karsyboy/pyroshine
+          ref: 4f1a90b0cc6d2d58663ee29c8a3b8a80e55f3cc2
+          path: deps/pyroshine
+          sparse-checkout: vendor/pyrowave
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Use the vendored PyroWave tree
+        shell: bash
+        run: mv deps/pyroshine/vendor/pyrowave deps/PyroWave
 
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -82,7 +111,7 @@ jobs:
         working-directory: deps/PyroWave
         run: |
           set -euo pipefail
-          # Pins Granite and applies the fork's maintained Granite patches.
+          # Pins Granite and applies the vendored Granite patches.
           ./checkout_granite.sh
           test "$(git -C Granite rev-parse HEAD)" = "53090429539bf3404250d18fe58db971f0907c04"
 
@@ -190,9 +219,9 @@ jobs:
             "pyrolight-${{ needs.version.outputs.release_tag }}-windows-x64-installer.exe"
             "pyrolight-${{ needs.version.outputs.release_tag }}-windows-x64-portable.zip"
             "pyrolight-${{ needs.version.outputs.release_tag }}-linux-x86_64.AppImage"
-            "pyrolight_${{ needs.version.outputs.release_version }}-1_amd64.deb"
-            "pyrolight-${{ needs.version.outputs.release_version }}-1.x86_64.rpm"
-            "pyrolight-${{ needs.version.outputs.release_version }}-1-x86_64.pkg.tar.zst"
+            "pyrolight_${{ needs.version.outputs.deb_version }}-1_amd64.deb"
+            "pyrolight-${{ needs.version.outputs.deb_version }}-1.x86_64.rpm"
+            "pyrolight-${{ needs.version.outputs.arch_version }}-1-x86_64.pkg.tar.zst"
           )
           for asset in "${expected[@]}"; do
             test -s "release-assets/${asset}" || {
@@ -208,21 +237,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.version.outputs.release_tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${RELEASE_TAG}" release-assets/* --clobber
           else
+            channel=()
+            [ "${PRERELEASE}" != true ] || channel=(--prerelease)
             gh release create "${RELEASE_TAG}" release-assets/* \
               --verify-tag \
               --target "${GITHUB_SHA}" \
               --title "Pyrolight ${RELEASE_TAG}" \
+              "${channel[@]}" \
               --generate-notes
           fi
 
   # Publishes the release to the [pyrowave] pacman repository by starting the
-  # Publish workflow of karsyboy/pyrowave-packages. Needs the
+  # Publish workflow of karsyboy/pyrowave-packages: stable releases as
+  # pyrolight-bin, prereleases as pyrolight-prerelease-bin. Needs the
   # PACKAGES_DISPATCH_TOKEN secret; see CONTRIBUTING.md.
   pacman:
     name: Update pacman repository

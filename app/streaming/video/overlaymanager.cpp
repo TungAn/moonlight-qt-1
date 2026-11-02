@@ -116,6 +116,7 @@ SDL_Color OverlayManager::getOverlayColor(OverlayType type)
 
 void OverlayManager::setOverlayRenderer(IOverlayRenderer* renderer)
 {
+    QWriteLocker lock(&m_OverlayRendererLock);
     m_Renderer = renderer;
 }
 
@@ -140,6 +141,8 @@ SDL_Surface* OverlayManager::getUpdatedKeyboardSurface()
 
 void OverlayManager::notifyOverlayUpdated(OverlayType type)
 {
+    QReadLocker lock(&m_OverlayRendererLock);
+
     if (m_Renderer == nullptr) {
         return;
     }

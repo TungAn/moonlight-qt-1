@@ -3,6 +3,7 @@
 #include "vrr/vrrtimingcontroller.h"
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -49,6 +50,11 @@ public:
 class PacingWorker {
 public:
     using ClockFn = uint64_t (*)();
+    // Reports a stop that has waited `waitedUs` for the worker thread, which
+    // is still inside `call` ("prepare", "present", "thread exit" or "wait").
+    using StopStallFn = void (*)(const char* call, uint64_t waitedUs);
+    // Recoverable WSI and GPU waits return well within this bound.
+    static constexpr uint64_t kStopStallUs = 2000000;
 
     struct Stats {
         TimingController::Stats timing;
@@ -80,8 +86,13 @@ public:
     PacingWorker& operator=(const PacingWorker&) = delete;
 
     bool start(std::function<void()> threadSetup = nullptr);
-    // Stop the thread and release every queued payload. Idempotent.
+    // Stop the thread and release every queued payload. Idempotent. Stop
+    // wakes every wait of the worker itself, but a presenter call (a
+    // swapchain acquire, a GPU wait) cannot be interrupted; it is joined, not
+    // abandoned, because it uses renderer state. A join that takes longer
+    // than `afterUs` is reported to `fn` and then still awaited.
     void stop();
+    void setStopStallReporter(StopStallFn fn, uint64_t afterUs = kStopStallUs);
 
     // Hand a frame to the worker; it owns the payload from here on.
     void submit(const FrameTiming& timing, void* payload);
@@ -103,6 +114,14 @@ private:
     void release(Entry& entry);
     void recordInterval(uint64_t submitUs, uint64_t intendedUs);
 
+    enum class Call : uint8_t {
+        Wait,
+        Prepare,
+        Present,
+        ThreadExit,
+    };
+    static const char* callName(Call call);
+
     const SessionConfig m_Config;
     IFramePresenter* const m_Presenter;
     const ClockFn m_Clock;
@@ -115,6 +134,10 @@ private:
     size_t m_Count = 0;
     bool m_Stopping = false;
     bool m_Started = false;
+    bool m_Exited = false;
+    std::atomic<Call> m_Call{Call::Wait};
+    StopStallFn m_StopStall = nullptr;
+    uint64_t m_StopStallUs = kStopStallUs;
     std::thread m_Thread;
     std::function<void()> m_ThreadSetup;
 

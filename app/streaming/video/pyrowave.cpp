@@ -257,6 +257,7 @@ bool PyroWaveVideoDecoder::initialize(PDECODER_PARAMETERS params)
                 config.reduceJudder = params->vrr.reduceJudder;
                 config.protection = protection;
                 m_VrrWorker = std::make_unique<Vrr::PacingWorker>(config, static_cast<Vrr::IFramePresenter*>(this), [] { return LiGetMicroseconds(); });
+                m_VrrWorker->setStopStallReporter(Vrr::logStopStall);
                 if (m_VrrWorker->start([] {
                         if (SDL_SetThreadPriority(SDL_THREAD_PRIORITY_TIME_CRITICAL) < 0) {
                             SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);

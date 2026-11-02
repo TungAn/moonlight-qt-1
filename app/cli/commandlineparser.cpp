@@ -392,6 +392,7 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
     parser.addChoiceOption("vrr-timing", "VRR timing", m_VrrTimingMap.keys());
     parser.addToggleOption("vrr-reduce-judder", "VRR judder reduction");
     parser.addToggleOption("mute-on-focus-loss", "mute audio when Pyrolight window loses focus");
+    parser.addToggleOption("microphone", "microphone passthrough to the host");
     parser.addToggleOption("background-gamepad", "background gamepad input");
     parser.addToggleOption("reverse-scroll-direction", "inverted scroll direction");
     parser.addToggleOption("swap-gamepad-buttons", "swap A/B and X/Y gamepad buttons (Nintendo-style)");
@@ -523,6 +524,9 @@ void StreamCommandLineParser::parse(const QStringList &args, StreamingPreference
 
     // Resolve --mute-on-focus-loss and --no-mute-on-focus-loss options
     preferences->muteOnFocusLoss = parser.getToggleOptionValue("mute-on-focus-loss", preferences->muteOnFocusLoss);
+
+    // Resolve --microphone and --no-microphone options
+    preferences->enableMicrophone = parser.getToggleOptionValue("microphone", preferences->enableMicrophone);
 
     // Resolve --background-gamepad and --no-background-gamepad options
     preferences->backgroundGamepad = parser.getToggleOptionValue("background-gamepad", preferences->backgroundGamepad);

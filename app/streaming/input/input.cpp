@@ -161,6 +161,11 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     m_SpecialKeyCombos[KeyComboToggleKeyboardGrab].scanCode = SDL_SCANCODE_K;
     m_SpecialKeyCombos[KeyComboToggleKeyboardGrab].enabled = WMUtils::isRunningDesktopEnvironment();
 
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].keyCombo = KeyComboToggleMicrophone;
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].keyCode = SDLK_u;
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].scanCode = SDL_SCANCODE_U;
+    m_SpecialKeyCombos[KeyComboToggleMicrophone].enabled = true;
+
     m_OldIgnoreDevices = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES);
     m_OldIgnoreDevicesExcept = SDL_GetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT);
 

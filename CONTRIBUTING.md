@@ -21,21 +21,24 @@ cd pyrolight
 
 ### PyroWave dependency
 
-PyroWave support requires the fork's C API from the pinned
-[`karsyboy/pyrowave`](https://github.com/karsyboy/pyrowave) revision:
+PyroWave support requires the C API 1.1 that Pyroshine's patch series adds to
+[upstream PyroWave](https://github.com/Themaister/pyrowave). Build it from the
+`vendor/pyrowave` tree of the pinned [Pyroshine](https://github.com/karsyboy/pyroshine) commit:
 
 | Item | Value |
 | --- | --- |
-| Revision | `78084ece21b1725d193442a7619660625f3f735a` |
+| Pyroshine commit | `4f1a90b0cc6d2d58663ee29c8a3b8a80e55f3cc2` |
 | C API | `pyrowave-shared` 1.1.0 (checked by `app/app.pro`) |
 | Granite | `53090429539bf3404250d18fe58db971f0907c04`, from `checkout_granite.sh` |
 
-Do not substitute upstream PyroWave or another ABI. Build and install it
-without the development applications:
+Do not substitute unpatched upstream PyroWave or another ABI. Build and install
+it without the development applications:
 
 ```sh
-git clone https://github.com/karsyboy/pyrowave.git deps/PyroWave
-git -C deps/PyroWave checkout 78084ece21b1725d193442a7619660625f3f735a
+git clone --filter=blob:none --no-checkout https://github.com/karsyboy/pyroshine.git deps/pyroshine
+git -C deps/pyroshine sparse-checkout set vendor/pyrowave
+git -C deps/pyroshine checkout 4f1a90b0cc6d2d58663ee29c8a3b8a80e55f3cc2
+cp -a deps/pyroshine/vendor/pyrowave deps/PyroWave
 (cd deps/PyroWave && ./checkout_granite.sh)
 cmake -S deps/PyroWave -B build/pyrowave \
   -DCMAKE_BUILD_TYPE=Release \
@@ -45,7 +48,7 @@ cmake --build build/pyrowave --parallel
 cmake --install build/pyrowave
 ```
 
-The fork carries full-resolution 4:4:4 payload allocation and 200-nit
+The patch series carries full-resolution 4:4:4 payload allocation and 200-nit
 normalization when converting PQ/scRGB into SDR; `checkout_granite.sh` applies
 its Granite patches. The Pyroshine host pins a newer revision of the same fork; the
 two pins need not match, but the client must decode the host's block-format
@@ -93,15 +96,17 @@ See [Linux packages](docs/LINUX_PACKAGES.md).
 ### Pacman repository
 
 The [`[pyrowave]` pacman repository](https://github.com/karsyboy/pyrowave-packages) publishes
-`pyrolight-bin`, which repackages the release's Arch package. After a release
-is published, the release workflow's `pacman` job starts that repository's
-**Publish** workflow, so a release needs no further step. The job needs the
+`pyrolight-bin`, which repackages the newest stable release's Arch package, and
+`pyrolight-prerelease-bin`, which follows the newest release including
+prereleases. After a release or prerelease is published, the release workflow's
+`pacman` job starts that repository's **Publish** workflow, so a release needs
+no further step. The job needs the
 `PACKAGES_DISPATCH_TOKEN` secret: a fine-grained token with access to
 `pyrowave-packages` only and the **Actions: Read and write** permission. If the
 job fails, run **Publish** in `pyrowave-packages` by hand.
 
 When changing the `archlinux` dependencies in `app/deploy/linux/nfpm.yaml`,
-update the PKGBUILD there to match.
+update both PKGBUILDs there to match.
 
 ### Windows x64
 
@@ -160,7 +165,8 @@ Protocol tests live in the `moonlight-common-c` submodule:
 
 ```sh
 cmake -S moonlight-common-c/moonlight-common-c -B build/common-c-tests \
-  -DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON
+  -DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON \
+  -DMICROPHONE_TESTS=ON
 cmake --build build/common-c-tests
 ctest --test-dir build/common-c-tests --output-on-failure
 ```
@@ -254,3 +260,22 @@ tagged revision, builds the Windows installer and portable ZIP and the
 Linux AppImage against the pinned PyroWave revision, verifies the PyroWave
 runtime is bundled, and, only after the tests pass, publishes a GitHub Release
 with `SHA256SUMS` and generated notes. Test installation of each asset afterwards.
+
+### Prereleases
+
+Prerelease tags take the form `vMAJOR.MINOR.PATCH-prerelease` or
+`vMAJOR.MINOR.PATCH-prerelease.N` (no `.BUILD` component). Set
+`app/version.txt` to the same version, for example `6.2.8-prerelease`:
+
+```sh
+git tag -a v6.2.8-prerelease -m "Pyrolight v6.2.8-prerelease"
+git push origin v6.2.8-prerelease
+```
+
+The [prerelease workflow](.github/workflows/prerelease.yml) runs the release
+workflow for these tags (the release workflow itself ignores them) and marks
+the GitHub release as a prerelease. The Linux packages carry the version in
+each format's prerelease form (`6.2.8~prerelease` for deb/rpm,
+`6.2.8prerelease` for pacman), so the release that follows upgrades them. Windows
+version resources hold only the numeric part (`6.2.8`); the installer upgrades a
+prerelease of the same version.

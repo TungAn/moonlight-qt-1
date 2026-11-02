@@ -35,6 +35,7 @@ Flickable {
         windowModeComboBox.reinitialize()
         selectModelValue(audioComboBox, audioListModel, StreamingPreferences.audioConfig)
         selectModelValue(audioQualityComboBox, audioQualityListModel, StreamingPreferences.audioQuality)
+        selectModelValue(micEchoComboBox, micEchoListModel, StreamingPreferences.micEchoCancel)
         selectModelValue(decoderComboBox, decoderListModel, StreamingPreferences.videoDecoderSelection)
         selectModelValue(codecComboBox, codecListModel, StreamingPreferences.videoCodecConfig)
         selectModelValue(rendererComboBox, rendererListModel, StreamingPreferences.rendererSelection)
@@ -1357,6 +1358,69 @@ Flickable {
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("Mutes Moonlight's audio when you Alt+Tab out of the stream or click on a different window.")
+                }
+
+                CheckBox {
+                    id: microphoneCheck
+                    width: parent.width
+                    text: qsTr("Send microphone to the host")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.enableMicrophone
+                    onCheckedChanged: {
+                        if (!StreamingPreferences.applyingProfile) {
+                            StreamingPreferences.enableMicrophone = checked
+                        }
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 8000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Talk in games and chat apps on the host. The host hears it as its streaming microphone; hosts that offer it include Pyroshine, Rubylight and Apollo. Mute and unmute while streaming with Ctrl+Alt+Shift+U.")
+                }
+
+                Label {
+                    width: parent.width
+                    id: micEchoTitle
+                    text: qsTr("Microphone echo cancellation")
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                    visible: StreamingPreferences.enableMicrophone
+                }
+
+                AutoResizingComboBox {
+                    // ignore setting the index at first, and actually set it when the component is loaded
+                    Component.onCompleted: {
+                        settingsPage.selectModelValue(micEchoComboBox, micEchoListModel,
+                                                      StreamingPreferences.micEchoCancel)
+                    }
+
+                    id: micEchoComboBox
+                    visible: StreamingPreferences.enableMicrophone
+                    textRole: "text"
+                    model: ListModel {
+                        id: micEchoListModel
+                        ListElement {
+                            text: qsTr("Automatic")
+                            val: StreamingPreferences.MEC_AUTO
+                        }
+                        ListElement {
+                            text: qsTr("On")
+                            val: StreamingPreferences.MEC_ON
+                        }
+                        ListElement {
+                            text: qsTr("Off")
+                            val: StreamingPreferences.MEC_OFF
+                        }
+                    }
+                    // ::onActivated must be used, as it only listens for when the index is changed by a human
+                    onActivated : {
+                        StreamingPreferences.micEchoCancel = micEchoListModel.get(currentIndex).val
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 8000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Keeps the host's own sound, played from your speakers, out of the microphone. Automatic and On record from the system's echo-cancelled microphone when there is one (on Linux, PipeWire's or PulseAudio's echo-cancel module). Off sends the default microphone as it is, which suits headphones.")
                 }
             }
         }

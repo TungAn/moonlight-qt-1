@@ -1,0 +1,22 @@
+---
+name: Prerelease Pyrolight
+
+# Builds prerelease tags (v1.2.3-prerelease or v1.2.3-prerelease.1) with the
+# release workflow itself: the same tests, Windows and Linux builds and
+# assets. The GitHub release is marked as a prerelease, and the [pyrowave]
+# pacman repository publishes it as pyrolight-prerelease-bin; pyrolight-bin
+# stays on stable releases.
+on:
+  push:
+    tags:
+      - 'v*prerelease*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Prerelease
+    uses: ./.github/workflows/release.yml
+    # PACKAGES_DISPATCH_TOKEN for the pacman job.
+    secrets: inherit
