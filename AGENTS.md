@@ -142,7 +142,7 @@ ctest --test-dir build/tests --output-on-failure
 ```
 
 - Protocol or framing changes: also run common-c's suite with
-  `-DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON -DMICROPHONE_TESTS=ON`.
+  `-DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON -DMICROPHONE_TESTS=ON -DREPLAY_WINDOW_TESTS=ON`.
 - Preferences or profile changes: run `app/tests/streamingpreferences_test.pro` and `app/tests/settingsapi_test.pro`.
 - Decoder or renderer changes: build with `CONFIG+=enable-pyrowave` and run the
   renderer smoke test on a Vulkan-capable display.
