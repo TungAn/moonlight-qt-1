@@ -155,8 +155,13 @@ public:
         // Preserve an overlay boundary even if both changes finish between UI polls.
         const uint64_t generation = nav.m_GamescopeFocus->snapshot() >> GamescopeInputFocus::GenerationShift;
         root.focus(769);
+        Uint32 start = SDL_GetTicks();
+        while (nav.m_GamescopeFocus->snapshot() & GamescopeInputFocus::Allowed) {
+            assert(SDL_GetTicks() - start < 3000);
+            SDL_Delay(1);
+        }
         root.focus(App);
-        const Uint32 start = SDL_GetTicks();
+        start = SDL_GetTicks();
         while ((nav.m_GamescopeFocus->snapshot() >> GamescopeInputFocus::GenerationShift) == generation ||
                 !(nav.m_GamescopeFocus->snapshot() & GamescopeInputFocus::Allowed)) {
             assert(SDL_GetTicks() - start < 3000);

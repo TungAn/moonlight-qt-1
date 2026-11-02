@@ -69,10 +69,27 @@ int main(int argc, char** argv)
         root.focus(App);
         await(observer, allowed);
 
-        // Fast open/close must remain observable even if final values are identical.
+        // Gamescope rewrites both properties on every focus pass (toasts, overlay
+        // fades). A same-value burst the observer reads only once must not
+        // neutralize held input. The grab stalls the observer's reads.
         original = observer.snapshot();
-        root.set(root.input, {769});
+        xcb_grab_server(root.connection);
+        for (int i = 0; i < 4; ++i) {
+            root.set(root.input, {App});
+            root.set(root.graphics, {App});
+        }
+        xcb_ungrab_server(root.connection);
+        root.flush();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        assert(observer.snapshot() == original);
+
+        // An open/close that completed before the observer could read must
+        // remain observable even though the final values are identical.
+        xcb_grab_server(root.connection);
+        root.focus(769);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
         root.set(root.input, {App});
+        xcb_ungrab_server(root.connection);
         root.flush();
         await(observer, [=](uint64_t state) {
             return allowed(state) && (state >> GamescopeInputFocus::GenerationShift) >

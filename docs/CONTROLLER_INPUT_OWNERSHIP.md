@@ -15,9 +15,13 @@ controller input, including when Steam Input is disabled.
 - `streaming/input/gamescopeinputfocus.*` discovers a matching local root using
   Gamescope launch hints, authenticated X sockets and the process/Steam app ID.
   It reads `GAMESCOPE_FOCUSED_APP` and `GAMESCOPE_FOCUSED_APP_GFX` on a worker
-  thread, sleeping on property notifications. A loss counter preserves rapid
-  open/close transitions. Socket cancellation bounds shutdown and interrupts
-  stalled X setup; the input thread never waits for X replies.
+  thread, sleeping on property notifications. Gamescope rewrites both
+  properties on every focus pass, so toasts, overlay fades and helper windows
+  send bursts of same-value updates; these never suspend input. A loss counter
+  preserves an open/close that completed before the observer could read it
+  when the unread updates span at least 100 ms of server time. Socket
+  cancellation bounds shutdown and interrupts stalled X setup; the input
+  thread never waits for X replies.
 - `streaming/input/input.*`, `gamepad.cpp` and `session.cpp` gate controller
   buttons, axes, motion, touch, shortcuts and emulated mouse input. Suspension
   sends neutral state without changing attached slots/masks. Mouse timers only
@@ -64,7 +68,8 @@ authenticated X servers; they never modify the user's compositor properties.
   controllers: neutralization, merged/independent slots, held controls, queue
   ordering, hotplug, mouse, sensors, touch and shutdown.
 - `gamescope-input-focus` checks discovery, ownership changes without local focus
-  loss, rapid transitions, invalid properties, disconnects and cancellation.
+  loss, same-value refresh bursts, hidden open/close transitions, invalid
+  properties, disconnects and cancellation.
 - `gamepad-ui-navigation` checks actual Qt key delivery for host/app/settings
   mappings, ownership suspension, rearming, stale input, hotplug and UI/stream
   handoff. It deliberately leaves SDL video uninitialized.
@@ -79,6 +84,8 @@ For hardware regression checks, open Steam and Quick Access and switch apps
 while on the host list, app grid, settings and an active stream. Navigate using
 buttons/sticks/triggers and confirm the covered screen receives no actions.
 Return with controls held, then release/center and verify fresh input works.
+During a stream, hold a stick while a Steam toast appears and confirm movement
+continues uninterrupted.
 Repeat after leaving a stream, with Steam Input enabled/disabled, and with
 external/multiple controllers. Check feedback, mouse/touch/motion and stream
 continuity. Desktop background-input behavior should remain unchanged.
