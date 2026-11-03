@@ -117,8 +117,13 @@ public:
             assert(packets.back().buttons == A_FLAG && packets.back().mask == mask);
             const uint64_t before = input.m_GamescopeFocus->snapshot();
             setOwnership(false);
-            setOwnership(true);
             Uint32 start = SDL_GetTicks();
+            while (input.m_GamescopeFocus->snapshot() & GamescopeInputFocus::Allowed) {
+                assert(SDL_GetTicks() - start < 3000);
+                SDL_Delay(1);
+            }
+            setOwnership(true);
+            start = SDL_GetTicks();
             // Leave the session unprocessed until a full open/close has occurred.
             while ((input.m_GamescopeFocus->snapshot() >> GamescopeInputFocus::GenerationShift) ==
                        (before >> GamescopeInputFocus::GenerationShift) ||

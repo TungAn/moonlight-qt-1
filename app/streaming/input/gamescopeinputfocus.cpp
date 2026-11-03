@@ -24,6 +24,10 @@
 
 struct GamescopeInputFocus::Impl
 {
+    // Server-time span of unread focus notifications that may hide an
+    // ownership loss. Opening and closing Steam's menus takes far longer.
+    static constexpr int32_t HiddenLossMs = 100;
+
     Uint32 wakeEvent;
     uint32_t appId;
     std::vector<std::string> displays;
@@ -273,17 +277,18 @@ struct GamescopeInputFocus::Impl
                     "Gamescope input observer: display=%s app=%u (SDL window focus is independent)",
                     display.c_str(), identity);
         unsigned inputNotifications = 0, graphicsNotifications = 0;
+        xcb_timestamp_t firstNotification = 0, lastNotification = 0;
         for (;;) {
             bool changed = false;
             while (auto* event = xcb_poll_for_event(connection)) {
                 if ((event->response_type & 0x7f) == XCB_PROPERTY_NOTIFY) {
                     auto* propertyEvent = reinterpret_cast<xcb_property_notify_event_t*>(event);
-                    if (propertyEvent->atom == atoms[0]) {
-                        ++inputNotifications;
-                        changed = true;
-                    }
-                    else if (propertyEvent->atom == atoms[1]) {
-                        ++graphicsNotifications;
+                    if (propertyEvent->atom == atoms[0] || propertyEvent->atom == atoms[1]) {
+                        if (!inputNotifications && !graphicsNotifications) {
+                            firstNotification = propertyEvent->time;
+                        }
+                        lastNotification = propertyEvent->time;
+                        ++(propertyEvent->atom == atoms[0] ? inputNotifications : graphicsNotifications);
                         changed = true;
                     }
                 }
@@ -291,9 +296,14 @@ struct GamescopeInputFocus::Impl
             }
             if (changed) {
                 // More than one update can hide a complete loss/restoration
-                // before the read. Preserve that boundary conservatively. A
-                // single same-value refresh must not interrupt held controls.
-                if (inputNotifications > 1 || graphicsNotifications > 1) publish(Known);
+                // before the read. Gamescope rewrites both properties on every
+                // focus pass, so toasts and overlay fades send bursts of
+                // same-value refreshes. Only a burst spanning longer than a
+                // Steam menu can open and close is treated as a hidden loss.
+                if ((inputNotifications > 1 || graphicsNotifications > 1) &&
+                        int32_t(lastNotification - firstNotification) >= HiddenLossMs) {
+                    publish(Known);
+                }
                 bool valid = property(connection, root, atoms[0], input) && input.size() == 1 &&
                     property(connection, root, atoms[1], graphics) && graphics.size() == 1;
                 if (!valid) {

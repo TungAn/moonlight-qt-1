@@ -166,7 +166,7 @@ Protocol tests live in the `moonlight-common-c` submodule:
 ```sh
 cmake -S moonlight-common-c/moonlight-common-c -B build/common-c-tests \
   -DPYROWAVE_PROTOCOL_TESTS=ON -DCONTROLLER_PROTOCOL_TESTS=ON -DAUDIO_QUALITY_TESTS=ON \
-  -DMICROPHONE_TESTS=ON
+  -DMICROPHONE_TESTS=ON -DREPLAY_WINDOW_TESTS=ON
 cmake --build build/common-c-tests
 ctest --test-dir build/common-c-tests --output-on-failure
 ```
