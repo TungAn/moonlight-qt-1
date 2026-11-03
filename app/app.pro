@@ -199,6 +199,7 @@ SOURCES += \
     streaming/input/pckeyboard.cpp \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
+    streaming/rubylightlink.cpp \
     streaming/audio/audio.cpp \
     streaming/audio/microphone.cpp \
     streaming/audio/renderers/sdlaud.cpp \
@@ -252,6 +253,8 @@ HEADERS += \
     streaming/input/gamepadidentity.h \
     streaming/input/gamepadfeedback.h \
     streaming/session.h \
+    streaming/rubylightlink.h \
+    streaming/rubylightprotocol.h \
     streaming/audio/microphone.h \
     streaming/audio/renderers/renderer.h \
     streaming/audio/renderers/sdl.h \
@@ -670,7 +673,7 @@ libva-wayland:dlopen-libva-wayland {
 }
 
 SOURCES += backend/networkbuffers.cpp backend/pyrowavecalibrator.cpp backend/udpproberunner.cpp displaybackend.cpp
-HEADERS += backend/networkbuffers.h backend/pyrowavecalibrator.h backend/pyrowavebandwidth.h backend/udpprobe.h backend/udpproberunner.h displaybackend.h
+HEADERS += backend/networkbuffers.h backend/pyrowavecalibrator.h backend/pyrowavebandwidth.h backend/pyrowavepace.h backend/udpprobe.h backend/udpproberunner.h displaybackend.h
 
 win32: LIBS += iphlpapi.lib advapi32.lib shell32.lib
 

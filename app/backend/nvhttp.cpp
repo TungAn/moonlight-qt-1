@@ -14,6 +14,11 @@
 #include <QImageReader>
 #include <QtEndian>
 #include <QNetworkProxy>
+#include <QHostInfo>
+#include <QUdpSocket>
+
+#include <cmath>
+#include <stdexcept>
 
 #define FAST_FAIL_TIMEOUT_MS 2000
 #define REQUEST_TIMEOUT_MS 5000
@@ -211,6 +216,94 @@ qint64 NvHTTP::probePyroWaveDownloadKbps()
     const auto kbps = PyroWaveBandwidth::throughputKbps(bytes, elapsed);
     if (kbps <= 0) throw QtNetworkReplyException(QNetworkReply::UnknownContentError, "Truncated or invalid 32 MiB PyroWave bandwidth probe.");
     return kbps;
+}
+
+PyroWavePace::Result NvHTTP::probePyroWaveBurst(int kbps, int packetSize, int fps, int paceKbps)
+{
+    using namespace PyroWavePace;
+    if (m_ServerCert.isNull() || httpsPort() == 0 || kbps < minimumKbps || kbps > 3000000 ||
+        packetSize < 256 || packetSize > 1392 || fps < 10 || fps > 500 || paceKbps < kbps || paceKbps > 9999999)
+        throw std::runtime_error("Invalid or unauthenticated PyroWave pace probe.");
+    QHostAddress host(m_BaseUrlHttps.host());
+    if (host.isNull()) {
+        const auto resolved = QHostInfo::fromName(m_BaseUrlHttps.host());
+        if (resolved.addresses().isEmpty()) throw std::runtime_error("Cannot resolve the host address.");
+        host = resolved.addresses().first();
+    }
+    const bool ipv6 = host.protocol() == QAbstractSocket::IPv6Protocol && host.toIPv4Address() == 0;
+    QUdpSocket socket;
+    if (!socket.bind(ipv6 ? QHostAddress(QHostAddress::AnyIPv6) : QHostAddress(QHostAddress::AnyIPv4), 0))
+        throw std::runtime_error("Cannot open a UDP socket for the pace probe.");
+    socket.setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption, 8 * 1024 * 1024);
+
+    // 32 lowercase hex characters, as the host requires.
+    const QByteArray token = QUuid::createUuid().toRfc4122().toHex();
+    Result result;
+    result.expected = expectedPackets(kbps, packetSize);
+    std::vector<bool> arrived(result.expected, false);
+    quint16 hostPort = 0;
+    bool probeArrived = false;
+
+    const auto receive = [&] {
+        char packet[2048];
+        // Bounded, so the HTTP reply is still handled under a continuous stream of datagrams.
+        for (int count = 0; count < 4096 && socket.hasPendingDatagrams(); ++count) {
+            QHostAddress source;
+            quint16 sourcePort = 0;
+            const qint64 bytes = socket.readDatagram(packet, sizeof(packet), &source, &sourcePort);
+            if (bytes < 0) break;
+            if (bytes != packetSize + probeExtraBytes || !source.isEqual(host, QHostAddress::TolerantConversion) ||
+                (hostPort != 0 && sourcePort != hostPort) || memcmp(packet, token.constData(), tokenLength) != 0)
+                continue;
+            probeArrived = true;
+            const auto seq = qFromBigEndian<quint32>(reinterpret_cast<const uchar*>(packet + tokenLength));
+            if (seq < arrived.size()) arrived[seq] = true;
+        }
+    };
+    // The host names its UDP port in the response headers and waits up to 1.5 s for
+    // our token there; the token also opens this client's firewall for the reply.
+    QTimer handshake;
+    handshake.setInterval(100);
+    const auto sendToken = [&] {
+        if (hostPort != 0 && !probeArrived) socket.writeDatagram(token, host, hostPort);
+    };
+    connect(&handshake, &QTimer::timeout, &socket, sendToken);
+    connect(&socket, &QUdpSocket::readyRead, &socket, receive);
+    QTimer poll;
+    connect(&poll, &QTimer::timeout, &socket, receive);
+    poll.start(1);
+
+    const QString reply = openConnectionToString(m_BaseUrlHttps, "pyrowave-udp-probe",
+        QString("kbps=%1&port=%2&packetsize=%3&token=%4&handshake=1&fps=%5&pacekbps=%6")
+            .arg(kbps).arg(socket.localPort()).arg(packetSize).arg(QString::fromLatin1(token)).arg(fps).arg(paceKbps),
+        6000, NVLL_ERROR, [&](QNetworkReply* response) {
+            hostPort = response->rawHeader("X-PyroWave-Udp-Port").toUShort();
+            sendToken();
+            handshake.start();
+        });
+    handshake.stop();
+    if (hostPort == 0) throw std::runtime_error("The host did not name its UDP probe port.");
+    verifyResponseStatus(reply);
+    bool validExpected = false, validSent = false, validElapsed = false;
+    const auto expected = getXmlString(reply, "expected").toUInt(&validExpected);
+    result.sent = getXmlString(reply, "sent").toUInt(&validSent);
+    result.senderMs = getXmlString(reply, "elapsedMs").toDouble(&validElapsed);
+    if (!validExpected || expected != result.expected || !validSent || result.sent > expected ||
+        !validElapsed || !std::isfinite(result.senderMs))
+        throw std::runtime_error("Invalid PyroWave pace probe result.");
+    bool validRetries = false, validError = false;
+    const auto retries = getXmlString(reply, "sendRetries").toUInt(&validRetries);
+    const auto sendError = getXmlString(reply, "lastSendError").toInt(&validError);
+    if (validRetries) result.hostSendRetries = retries;
+    if (validError) result.hostLastSendError = sendError;
+
+    // Take a briefly reordered tail too.
+    QEventLoop drain;
+    QTimer::singleShot(100, &drain, &QEventLoop::quit);
+    drain.exec();
+    receive();
+    summarize(result, arrived, fps, groupPackets(paceKbps, packetSize, ipv6));
+    return result;
 }
 
 void
@@ -498,9 +591,10 @@ NvHTTP::openConnectionToString(QUrl baseUrl,
                                QString command,
                                QString arguments,
                                int timeoutMs,
-                               NvLogLevel logLevel)
+                               NvLogLevel logLevel,
+                               const std::function<void(QNetworkReply*)>& onHeaders)
 {
-    QNetworkReply* reply = openConnection(baseUrl, command, arguments, timeoutMs, logLevel);
+    QNetworkReply* reply = openConnection(baseUrl, command, arguments, timeoutMs, logLevel, nullptr, onHeaders);
     QString ret;
 
     QTextStream stream(reply);
@@ -522,7 +616,8 @@ NvHTTP::openConnection(QUrl baseUrl,
                        QString command,
                        QString arguments,
                        int timeoutMs,
-                       NvLogLevel logLevel, qint64* probeBytes)
+                       NvLogLevel logLevel, qint64* probeBytes,
+                       const std::function<void(QNetworkReply*)>& onHeaders)
 {
     // Port must be set
     Q_ASSERT(baseUrl.port(0) != 0);
@@ -572,6 +667,16 @@ NvHTTP::openConnection(QUrl baseUrl,
             while (reply->bytesAvailable() > 0) {
                 *probeBytes += reply->read(64 * 1024).size();
                 if (*probeBytes > PyroWaveBandwidth::ProbeBytes) { reply->abort(); break; }
+            }
+        });
+    }
+
+    if (onHeaders) {
+        // Headers arrive before a streamed body, which some probes send only at their end.
+        connect(reply, &QNetworkReply::metaDataChanged, reply, [reply, onHeaders] {
+            if (!reply->property("headers_seen").toBool()) {
+                reply->setProperty("headers_seen", true);
+                onHeaders(reply);
             }
         });
     }

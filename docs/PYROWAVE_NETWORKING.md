@@ -108,6 +108,36 @@ active probe (the UDP run sends an authenticated stop). Host-side behavior of
 the HTTPS probe is specified in Pyroshine's
 [PyroWave compatibility](https://github.com/karsyboy/pyroshine/blob/main/docs/PYROWAVE_COMPATIBILITY.md#authenticated-calibration) guide.
 
+### Frame pace (Rubylight and Vibeshine)
+
+A host that serves Vibeshine's frame-shaped UDP probe (serverinfo
+`PyroWaveUdpProbeBurstVersion` and `PyroWaveUdpHandshakeVersion` 1, as Rubylight
+does) also gets a frame-pace test after the HTTPS probe. The host sends the
+profile's bitrate as whole frames at its frame rate, each frame back to back in
+1 ms groups at a candidate pace, for two seconds per test. The client opens a
+UDP socket, sends its token to the port the host names in the
+`X-PyroWave-Udp-Port` response header (which also opens a client firewall for
+the reply) and counts which sequence numbers arrived.
+
+The search and its limits are those of Nonary's moonlight-qt and Nightjar
+(`app/backend/pyrowavepace.h`): under 2% loss, no 100 ms window over 5%, no
+frame losing over 10%, and under 2% of frames missing their last 1 ms group.
+It tries the link first (the lower of the host's and this client's wired
+speed), bisects below it, confirms a 5% margin twice, and then tries every
+50 Mbps step. The pace never goes below 1.25 times the bitrate, so a frame
+still fits its interval. A qualified pace is stored for that host and shown
+under the calibration button; a test that qualifies nothing removes it, and a
+failed or stopped test leaves it. **Clear calibrated pace** removes it.
+
+While **Send the calibrated PyroWave pace to the host** is on (the default),
+every PyroWave stream to that host carries it as
+`x-ss-video[0].pyrowavePaceMbps` in the ANNOUNCE, and Rubylight sends each
+frame at that pace instead of its default for an unmeasured path (1.25 times the
+stream's wire demand, which spreads a frame over about 80% of its interval).
+The client's own wired link speed, when known, goes as
+`x-ss-video[0].pyrowaveLinkMbps`. Hosts that do not know the keys ignore them.
+The log shows `PyroWave pacing hints: pace N Mbps, wired link M Mbps`.
+
 ## Transport dialects
 
 Setup chooses one dialect per RTSP handshake, and the decoder records it at

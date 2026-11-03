@@ -17,6 +17,7 @@
 #ifdef HAVE_PYROWAVE
 #include "video/pyrowave.h"
 #include "backend/networkbuffers.h"
+#include "backend/pyrowavecalibrator.h"
 #include <PyroWave.h>
 #endif
 
@@ -76,8 +77,17 @@ CONNECTION_LISTENER_CALLBACKS Session::k_ConnCallbacks = {
     Session::clRumbleTriggers,
     Session::clSetMotionEventState,
     Session::clSetControllerLED,
-    Session::clSetAdaptiveTriggers
+    Session::clSetAdaptiveTriggers,
+    Session::clRubylightMessage
 };
+
+void Session::clRubylightMessage(uint16_t type, const uint8_t* payload, int length)
+{
+    // The control stream runs only while a session is active.
+    if (s_ActiveSession != nullptr) {
+        s_ActiveSession->m_Rubylight.onMessage(type, payload, length);
+    }
+}
 
 Session* Session::s_ActiveSession;
 QSemaphore Session::s_ActiveSessionSemaphore(1);
@@ -1432,6 +1442,9 @@ private:
         // LiStartConnection() and LiStopConnection().
         SDL_assert(m_Session->m_VideoDecoder == nullptr);
 
+        // Rubylight messages need the control stream.
+        m_Session->m_Rubylight.stop();
+
         // Finish cleanup of the connection state
         LiStopConnection();
 
@@ -2002,6 +2015,16 @@ bool Session::startConnectionAsync()
 
 #ifdef HAVE_PYROWAVE
     if (m_StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_PYROWAVE) {
+        // Rubylight and Vibeshine pace PyroWave at the pace calibrated for this host.
+        if (m_Preferences->pyrowaveSendPace) {
+            m_StreamConfig.pyrowavePaceMbps = PyroWaveCalibrator::storedPaceMbps(m_Computer->uuid);
+        }
+        m_StreamConfig.pyrowaveLinkMbps = int(NetworkBuffers::routedWiredLinkMbps(
+            QHostAddress(m_Computer->activeAddress.address())));
+        if (m_StreamConfig.pyrowavePaceMbps > 0 || m_StreamConfig.pyrowaveLinkMbps > 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "PyroWave pacing hints: pace %d Mbps, wired link %d Mbps",
+                        m_StreamConfig.pyrowavePaceMbps, m_StreamConfig.pyrowaveLinkMbps);
+        }
         const QString bufferWarning = NetworkBuffers::launchWarning(m_StreamConfig.packetSize,
             QHostAddress(m_Computer->activeAddress.address()));
         if (!bufferWarning.isEmpty()) {
@@ -2021,6 +2044,9 @@ bool Session::startConnectionAsync()
         // listener.
         return false;
     }
+
+    // Rubylight hosts list the control messages they take in the DESCRIBE answer.
+    m_Rubylight.start(m_Preferences->rubylightPhaseLock);
 
     emit connectionStarted();
     return true;

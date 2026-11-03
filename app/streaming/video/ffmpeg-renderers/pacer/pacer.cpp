@@ -430,6 +430,12 @@ void Pacer::renderFrame(AVFrame* frame)
     m_VsyncRenderer->releaseRenderLock();
     uint64_t afterRender = LiGetMicroseconds();
 
+    // Presented: phase lock and frame latency for a Rubylight host. The decoder
+    // stores the frame's 90 kHz RTP timestamp in pts.
+    if (frame->pts >= 0 && frame->pts <= INT64_C(0xFFFFFFFF)) {
+        Session::get()->rubylight().framePresented(uint32_t(frame->pts));
+    }
+
     m_VideoStats->totalRenderTimeUs += (afterRender - beforeRender);
     m_VideoStats->renderedFrames++;
 

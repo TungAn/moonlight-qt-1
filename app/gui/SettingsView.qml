@@ -2171,6 +2171,59 @@ Flickable {
                             slider.value = networkCalibration.ceilingKbps
                         }
                     }
+                    // Rubylight and Vibeshine hosts also run a frame-pace test; its result is
+                    // stored per host and sent with every PyroWave stream to that host.
+                    Label {
+                        // Re-read after a calibration or a clear changes paceMbps.
+                        property int storedPace: networkCalibration.paceMbps >= 0 && calibrationHost.currentIndex >= 0 &&
+                                                 calibrationHost.model[calibrationHost.currentIndex] ?
+                                                     networkCalibration.storedPaceMbps(calibrationHost.model[calibrationHost.currentIndex].uuid) : 0
+                        id: storedPaceLabel
+                        width: parent.width
+                        visible: storedPace > 0
+                        text: qsTr("Calibrated PyroWave pace for this host: %1 Mbps").arg(storedPace)
+                        wrapMode: Text.Wrap
+                    }
+                    Button {
+                        text: qsTr("Clear calibrated pace")
+                        visible: storedPaceLabel.storedPace > 0
+                        enabled: !networkCalibration.running
+                        onClicked: networkCalibration.clearPace(calibrationHost.model[calibrationHost.currentIndex].uuid)
+                    }
+                    CheckBox {
+                        id: pyrowaveSendPaceCheck
+                        width: parent.width
+                        text: qsTr("Send the calibrated PyroWave pace to the host")
+                        font.pointSize: 12
+                        checked: StreamingPreferences.pyrowaveSendPace
+                        onCheckedChanged: {
+                            if (!StreamingPreferences.applyingProfile) {
+                                StreamingPreferences.pyrowaveSendPace = checked
+                            }
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 8000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Rubylight and Vibeshine hosts send each PyroWave frame at this pace instead of their own, which is slower on a path they have not measured. A faster pace gets each frame here sooner.")
+                    }
+                    CheckBox {
+                        id: rubylightPhaseLockCheck
+                        width: parent.width
+                        text: qsTr("Phase lock with Rubylight hosts")
+                        font.pointSize: 12
+                        checked: StreamingPreferences.rubylightPhaseLock
+                        onCheckedChanged: {
+                            if (!StreamingPreferences.applyingProfile) {
+                                StreamingPreferences.rubylightPhaseLock = checked
+                            }
+                        }
+
+                        ToolTip.delay: 1000
+                        ToolTip.timeout: 8000
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Tells a Rubylight host how long before this display's refresh each frame was ready, so it captures frames to arrive just before the refresh on a fixed-refresh screen. Linux only: it reads the display's refresh times from DRM. Set PYROLIGHT_PHASE_LATCH_LEAD_US to how long before the refresh the compositor takes a frame (default 4000).")
+                    }
                 }
 
                 Label {

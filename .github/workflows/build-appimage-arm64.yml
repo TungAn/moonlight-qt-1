@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - pyrolight-arm64
+      - rubylight-pacing-arm64
   workflow_dispatch:
     inputs:
       ci_version:

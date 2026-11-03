@@ -84,6 +84,18 @@ target_include_directories(pyrowave-golden PRIVATE ../app)
 target_compile_options(pyrowave-golden PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
 add_test(NAME pyrowave-golden COMMAND pyrowave-golden ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
 
+add_executable(rubylight-protocol rubylight_protocol.cpp)
+target_compile_features(rubylight-protocol PRIVATE cxx_std_17)
+target_include_directories(rubylight-protocol PRIVATE ../app)
+target_compile_options(rubylight-protocol PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG -Wall -Wextra>)
+add_test(NAME rubylight-protocol COMMAND rubylight-protocol)
+
+add_executable(pyrowave-pace pyrowave_pace.cpp)
+target_compile_features(pyrowave-pace PRIVATE cxx_std_17)
+target_include_directories(pyrowave-pace PRIVATE ../app)
+target_compile_options(pyrowave-pace PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG> $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG -Wall -Wextra>)
+add_test(NAME pyrowave-pace COMMAND pyrowave-pace)
+
 add_executable(vrr-timing vrr_timing.cpp
     ../app/streaming/vrrratepolicy.cpp
     ../app/streaming/video/ffmpeg-renderers/pacer/vrr/vrrsourceclock.cpp

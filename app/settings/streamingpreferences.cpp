@@ -40,6 +40,8 @@
 #define SER_AUDIOQUALITY "audioquality"
 #define SER_MICROPHONE "microphone"
 #define SER_MICECHOCANCEL "micechocancel"
+#define SER_PYROWAVESENDPACE "pyrowavesendpace"
+#define SER_RUBYLIGHTPHASELOCK "rubylightphaselock"
 #define SER_VIDEOCFG "videocfg"
 #define SER_HDR "hdr"
 #define SER_YUV444 "yuv444"
@@ -200,6 +202,8 @@ void StreamingPreferences::loadLegacySettings(QSettings& settings)
                                                     settings.value(SER_AUDIOQUALITY, int(AQ_HOST_DEFAULT)).toInt(),
                                                     int(AQ_MAXIMUM)));
     enableMicrophone = settings.value(SER_MICROPHONE, false).toBool();
+    pyrowaveSendPace = settings.value(SER_PYROWAVESENDPACE, true).toBool();
+    rubylightPhaseLock = settings.value(SER_RUBYLIGHTPHASELOCK, false).toBool();
     micEchoCancel = static_cast<MicEchoCancel>(qBound(int(MEC_AUTO),
                                                       settings.value(SER_MICECHOCANCEL, int(MEC_AUTO)).toInt(),
                                                       int(MEC_OFF)));
@@ -404,6 +408,8 @@ QVariantMap StreamingPreferences::profileSettings() const
         {SER_AUDIOCFG, static_cast<int>(audioConfig)},
         {SER_AUDIOQUALITY, static_cast<int>(audioQuality)},
         {SER_MICROPHONE, enableMicrophone},
+        {SER_PYROWAVESENDPACE, pyrowaveSendPace},
+        {SER_RUBYLIGHTPHASELOCK, rubylightPhaseLock},
         {SER_MICECHOCANCEL, static_cast<int>(micEchoCancel)},
         {SER_HDR, enableHdr},
         {SER_YUV444, enableYUV444},
@@ -439,6 +445,8 @@ QVariantMap StreamingPreferences::defaultProfileSettings() const
         {SER_AUDIOCFG, static_cast<int>(AudioConfig::AC_STEREO)},
         {SER_AUDIOQUALITY, static_cast<int>(AudioQuality::AQ_HOST_DEFAULT)},
         {SER_MICROPHONE, false},
+        {SER_PYROWAVESENDPACE, true},
+        {SER_RUBYLIGHTPHASELOCK, false},
         {SER_MICECHOCANCEL, static_cast<int>(MicEchoCancel::MEC_AUTO)},
         {SER_HDR, false},
         {SER_YUV444, false},
@@ -512,6 +520,8 @@ void StreamingPreferences::applyProfileSettings(const QVariantMap& values)
     audioQuality = static_cast<AudioQuality>(
         boundedInt(SER_AUDIOQUALITY, AQ_HOST_DEFAULT, AQ_MAXIMUM, AQ_HOST_DEFAULT));
     enableMicrophone = value(SER_MICROPHONE).toBool();
+    pyrowaveSendPace = value(SER_PYROWAVESENDPACE).toBool();
+    rubylightPhaseLock = value(SER_RUBYLIGHTPHASELOCK).toBool();
     micEchoCancel = static_cast<MicEchoCancel>(boundedInt(SER_MICECHOCANCEL, MEC_AUTO, MEC_OFF, MEC_AUTO));
     enableHdr = value(SER_HDR).toBool();
     enableYUV444 = value(SER_YUV444).toBool();
@@ -711,6 +721,8 @@ void StreamingPreferences::emitProfileSettingChanges(const QVariantMap& oldValue
     if (changed(SER_AUDIOCFG)) emit audioConfigChanged();
     if (changed(SER_AUDIOQUALITY)) emit audioQualityChanged();
     if (changed(SER_MICROPHONE)) emit enableMicrophoneChanged();
+    if (changed(SER_PYROWAVESENDPACE)) emit pyrowaveSendPaceChanged();
+    if (changed(SER_RUBYLIGHTPHASELOCK)) emit rubylightPhaseLockChanged();
     if (changed(SER_MICECHOCANCEL)) emit micEchoCancelChanged();
     if (changed(SER_PACKETSIZE)) emit packetSizeChanged();
     if (changed(SER_HDR)) emit enableHdrChanged();

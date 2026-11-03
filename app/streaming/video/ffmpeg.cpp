@@ -2168,6 +2168,8 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
                 const int used = (int)strlen(overlayText);
                 m_Pacer->formatVrrStats(overlayText + used, overlayLength - used);
             }
+            const int rubylightUsed = (int)strlen(overlayText);
+            Session::get()->rubylight().formatOverlay(overlayText + rubylightUsed, overlayLength - rubylightUsed);
             Session::get()->getOverlayManager().setOverlayTextUpdated(Overlay::OverlayDebug);
         }
 

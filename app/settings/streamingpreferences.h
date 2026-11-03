@@ -198,6 +198,10 @@ public:
     Q_PROPERTY(AudioConfig audioConfig MEMBER audioConfig NOTIFY audioConfigChanged)
     Q_PROPERTY(AudioQuality audioQuality MEMBER audioQuality NOTIFY audioQualityChanged)
     Q_PROPERTY(bool enableMicrophone MEMBER enableMicrophone NOTIFY enableMicrophoneChanged)
+    // Send this host's calibrated PyroWave pace (PyroWaveCalibrator) in the ANNOUNCE.
+    Q_PROPERTY(bool pyrowaveSendPace MEMBER pyrowaveSendPace NOTIFY pyrowaveSendPaceChanged)
+    // Report display latch slack to Rubylight hosts so they time captures to it.
+    Q_PROPERTY(bool rubylightPhaseLock MEMBER rubylightPhaseLock NOTIFY rubylightPhaseLockChanged)
     Q_PROPERTY(MicEchoCancel micEchoCancel MEMBER micEchoCancel NOTIFY micEchoCancelChanged)
     Q_PROPERTY(VideoCodecConfig videoCodecConfig MEMBER videoCodecConfig NOTIFY videoCodecConfigChanged)
     Q_PROPERTY(bool enableHdr MEMBER enableHdr NOTIFY enableHdrChanged)
@@ -284,6 +288,8 @@ public:
     AudioConfig audioConfig;
     AudioQuality audioQuality;
     bool enableMicrophone;
+    bool pyrowaveSendPace;
+    bool rubylightPhaseLock;
     MicEchoCancel micEchoCancel;
     VideoCodecConfig videoCodecConfig;
     bool enableHdr;
@@ -320,6 +326,8 @@ signals:
     void audioConfigChanged();
     void audioQualityChanged();
     void enableMicrophoneChanged();
+    void pyrowaveSendPaceChanged();
+    void rubylightPhaseLockChanged();
     void micEchoCancelChanged();
     void videoCodecConfigChanged();
     void enableHdrChanged();

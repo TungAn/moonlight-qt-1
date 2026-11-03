@@ -11,6 +11,7 @@
 #include "audio/renderers/renderer.h"
 #include "audio/microphone.h"
 #include "video/overlaymanager.h"
+#include "rubylightlink.h"
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -120,6 +121,11 @@ public:
     static Session* get()
     {
         return s_ActiveSession;
+    }
+
+    RubylightLink& rubylight()
+    {
+        return m_Rubylight;
     }
 
     Overlay::OverlayManager& getOverlayManager()
@@ -259,6 +265,9 @@ private:
     void clSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right);
 
     static
+    void clRubylightMessage(uint16_t type, const uint8_t* payload, int length);
+
+    static
     int arInit(int audioConfiguration,
                const POPUS_MULTISTREAM_CONFIGURATION opusConfig,
                void* arContext, int arFlags);
@@ -328,6 +337,7 @@ private:
     Uint32 m_DropAudioEndTime;
 
     Overlay::OverlayManager m_OverlayManager;
+    RubylightLink m_Rubylight;
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;

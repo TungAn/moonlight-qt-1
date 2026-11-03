@@ -3,12 +3,15 @@
 #include "identitymanager.h"
 #include "nvapp.h"
 #include "nvaddress.h"
+#include "pyrowavepace.h"
 
 #include <Limelight.h>
 
 #include <QUrl>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+
+#include <functional>
 
 class NvComputer;
 
@@ -139,9 +142,15 @@ public:
                            QString command,
                            QString arguments,
                            int timeoutMs,
-                           NvLogLevel logLevel = NvLogLevel::NVLL_VERBOSE);
+                           NvLogLevel logLevel = NvLogLevel::NVLL_VERBOSE,
+                           const std::function<void(QNetworkReply*)>& onHeaders = {});
 
     qint64 probePyroWaveDownloadKbps();
+
+    // One frame-shaped PyroWave UDP probe (Vibeshine's /pyrowave-udp-probe with the
+    // handshake, which Rubylight also serves): `kbps` sent for two seconds as `fps`
+    // frames, each paced at `paceKbps` in 1 ms groups. Throws on errors.
+    PyroWavePace::Result probePyroWaveBurst(int kbps, int packetSize, int fps, int paceKbps);
 
     void setServerCert(QSslCertificate serverCert);
     void setAddress(NvAddress address);
@@ -196,7 +205,8 @@ private:
                    QString command,
                    QString arguments,
                    int timeoutMs,
-                   NvLogLevel logLevel, qint64* probeBytes = nullptr);
+                   NvLogLevel logLevel, qint64* probeBytes = nullptr,
+                   const std::function<void(QNetworkReply*)>& onHeaders = {});
 
     NvAddress m_Address;
     QNetworkAccessManager* m_Nam;

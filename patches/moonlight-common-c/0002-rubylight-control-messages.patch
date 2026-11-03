@@ -1,0 +1,407 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index db66a04..8a638f1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -141,6 +141,14 @@ if(AUDIO_QUALITY_TESTS)
+   add_test(NAME audio-quality COMMAND audio-quality-test)
+ endif()
+ 
++option(RUBYLIGHT_CONTROL_TESTS "Build Rubylight control negotiation tests" OFF)
++if(RUBYLIGHT_CONTROL_TESTS)
++  enable_testing()
++  add_executable(rubylight-control-test tests/rubylight_control.c)
++  target_include_directories(rubylight-control-test PRIVATE src enet/include)
++  add_test(NAME rubylight-control COMMAND rubylight-control-test)
++endif()
++
+ option(MICROPHONE_TESTS "Build client microphone negotiation and datagram tests" OFF)
+ if(MICROPHONE_TESTS)
+   enable_testing()
+diff --git a/src/ControlStream.c b/src/ControlStream.c
+index f9c5bd7..ef2392e 100644
+--- a/src/ControlStream.c
++++ b/src/ControlStream.c
+@@ -1,4 +1,5 @@
+ #include "Limelight-internal.h"
++#include "RubylightControl.h"
+ 
+ // This is a private header, but it just contains some time macros
+ #include <enet/time.h>
+@@ -1008,6 +1009,44 @@ static bool sendMessageAndForget(short ptype, unsigned int paylen, const void* p
+     return ret;
+ }
+ 
++// Rubylight control messages the host listed in this connection's DESCRIBE answer.
++// Written on the connection thread before the control stream starts.
++static uint16_t rubylightMessages[RL_MAX_CONTROL_MESSAGES];
++static int rubylightMessageCount;
++
++void setRubylightControlMessages(const uint16_t* ids, int count) {
++    if (ids == NULL || count < 0) {
++        count = 0;
++    }
++    if (count > RL_MAX_CONTROL_MESSAGES) {
++        count = RL_MAX_CONTROL_MESSAGES;
++    }
++    rubylightMessageCount = 0;
++    if (count > 0) {
++        memcpy(rubylightMessages, ids, (size_t)count * sizeof(ids[0]));
++    }
++    rubylightMessageCount = count;
++}
++
++bool LiHostAcceptsRubylightMessage(uint16_t type) {
++    for (int i = 0; i < rubylightMessageCount; i++) {
++        if (rubylightMessages[i] == type) {
++            return true;
++        }
++    }
++    return false;
++}
++
++int LiSendRubylightMessage(uint16_t type, const void* payload, int length, bool reliable) {
++    if (!LiHostAcceptsRubylightMessage(type) || payload == NULL || length <= 0 || length > 1024 ||
++        !IS_SUNSHINE() || !encryptedControlStream || stopping || peer == NULL) {
++        return -1;
++    }
++    return sendMessageAndForget((short)type, (unsigned int)length, payload, CTRL_CHANNEL_GENERIC,
++                                reliable ? ENET_PACKET_FLAG_RELIABLE : ENET_PACKET_FLAG_UNSEQUENCED,
++                                false) ? 0 : -1;
++}
++
+ static bool sendMessageAndDiscardReply(short ptype, unsigned int paylen, const void* payload, uint8_t channelId, uint32_t flags, bool moreData) {
+     if (AppVersionQuad[0] >= 5) {
+         if (!sendMessageEnet(ptype, paylen, payload, channelId, flags, moreData)) {
+@@ -1482,8 +1521,19 @@ static void controlReceiveThreadFunc(void* context) {
+                 hdrEnabled = (enableByte != 0);
+             }
+ 
++            // Rubylight messages from the host go straight to the client, on this
++            // thread: a clock sync reply is timed by when it is handled.
++            if (IS_SUNSHINE() && encryptedControlStream && LiRubylightMaxPayload(ctlHdr->type) > 0) {
++                int length = packetLength - (int)sizeof(*ctlHdr);
++                if (length > 0 && length <= LiRubylightMaxPayload(ctlHdr->type)) {
++                    ListenerCallbacks.rubylightMessage(ctlHdr->type, (const uint8_t*)(ctlHdr + 1), length);
++                }
++                else {
++                    Limelog("Dropping Rubylight message %04x of %d bytes\n", ctlHdr->type, length);
++                }
++            }
+             // Process client callbacks in a separate thread
+-            if (needsAsyncCallback(ctlHdr->type)) {
++            else if (needsAsyncCallback(ctlHdr->type)) {
+                 queueAsyncCallback(ctlHdr, packetLength);
+             }
+             else if (ctlHdr->type == packetTypes[IDX_TERMINATION]) {
+diff --git a/src/FakeCallbacks.c b/src/FakeCallbacks.c
+index 29fdf18..0018c95 100644
+--- a/src/FakeCallbacks.c
++++ b/src/FakeCallbacks.c
+@@ -41,6 +41,7 @@ static void fakeClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTrigger
+ static void fakeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {}
+ static void fakeClSetAdaptiveTriggers(uint16_t controllerNumber, uint8_t eventFlags, uint8_t typeLeft, uint8_t typeRight, uint8_t *left, uint8_t *right) {};
+ static void fakeClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b) {}
++static void fakeClRubylightMessage(uint16_t type, const uint8_t* payload, int length) {}
+ 
+ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
+     .stageStarting = fakeClStageStarting,
+@@ -56,6 +57,7 @@ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
+     .setMotionEventState = fakeClSetMotionEventState,
+     .setControllerLED = fakeClSetControllerLED,
+     .setAdaptiveTriggers = fakeClSetAdaptiveTriggers,
++    .rubylightMessage = fakeClRubylightMessage,
+ };
+ 
+ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_RENDERER_CALLBACKS* arCallbacks,
+@@ -146,5 +148,8 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
+         if ((*clCallbacks)->setAdaptiveTriggers == NULL) {
+             (*clCallbacks)->setAdaptiveTriggers = fakeClSetAdaptiveTriggers;
+         }
++        if ((*clCallbacks)->rubylightMessage == NULL) {
++            (*clCallbacks)->rubylightMessage = fakeClRubylightMessage;
++        }
+     }
+ }
+diff --git a/src/Limelight-internal.h b/src/Limelight-internal.h
+index 1b8121e..dade59d 100644
+--- a/src/Limelight-internal.h
++++ b/src/Limelight-internal.h
+@@ -130,6 +130,7 @@ void connectionDetectedFrameLoss(uint32_t startFrame, uint32_t endFrame);
+ void connectionReceivedCompleteFrame(uint32_t frameIndex, bool frameIsLTR);
+ void connectionSawFrame(uint32_t frameIndex);
+ void connectionSendFrameFecStatus(PSS_FRAME_FEC_STATUS fecStatus);
++void setRubylightControlMessages(const uint16_t* ids, int count);
+ int sendInputPacketOnControlStream(unsigned char* data, unsigned int length, uint8_t channelId, uint32_t flags, bool moreData);
+ void flushInputOnControlStream(void);
+ bool isControlDataInTransit(void);
+diff --git a/src/Limelight.h b/src/Limelight.h
+index 7f008c6..315460e 100644
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -115,6 +115,15 @@ typedef struct _STREAM_CONFIGURATION {
+     // when the host offers it with encryption; the rest of the stream does not
+     // depend on it.
+     bool enableMic;
++
++    // PyroWave pacing hints for the ANNOUNCE, in the names and meaning of
++    // Nonary's moonlight-common-c and Nightjar. pyrowavePaceMbps is the fastest
++    // whole-frame pace this client's calibration received without losing frame
++    // tails; a host that reads it (Rubylight, Vibeshine) paces PyroWave frames
++    // at it. pyrowaveLinkMbps is the client's own wired link toward the host.
++    // Zero (the default) sends nothing. Hosts that do not know them ignore them.
++    int pyrowavePaceMbps;
++    int pyrowaveLinkMbps;
+ } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
+ 
+ #define AUDIO_QUALITY_HOST_DEFAULT 0
+@@ -527,6 +536,12 @@ typedef void(*ConnListenerSetAdaptiveTriggers)(uint16_t controllerNumber, uint8_
+ // This callback is invoked to set a controller's RGB LED (if present).
+ typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b);
+ 
++// This callback is invoked on the control receive thread for a Rubylight message
++// from the host (RL_HOST_TIMING, RL_CLOCK_SYNC, RL_LINK_NOTICE or RL_PIPELINE_RATES,
++// see LiSendRubylightMessage()). The payload is only valid during the call, and the
++// callback must not block: clock sync replies are timed by when they are handled.
++typedef void(*ConnListenerRubylightMessage)(uint16_t type, const uint8_t* payload, int length);
++
+ typedef struct _CONNECTION_LISTENER_CALLBACKS {
+     ConnListenerStageStarting stageStarting;
+     ConnListenerStageComplete stageComplete;
+@@ -541,6 +556,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
+     ConnListenerSetMotionEventState setMotionEventState;
+     ConnListenerSetControllerLED setControllerLED;
+     ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
++    ConnListenerRubylightMessage rubylightMessage;
+ } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
+ 
+ // Use this function to zero the connection callbacks when allocated on the stack or heap
+@@ -1083,6 +1099,24 @@ bool LiIsMicrophoneStreamActive(void);
+ // stream is not active or the send failed. May be called from any thread.
+ int LiSendMicrophoneOpusData(const unsigned char* opusData, int opusLength);
+ 
++// Rubylight control messages (Rubylight's docs/control-messages.md). The host's
++// DESCRIBE answer lists the ones it takes (a=x-rl-control); other hosts list none.
++#define RL_PHASE_LOCK_REPORT 0x5530
++#define RL_HOST_TIMING       0x5536
++#define RL_CLOCK_SYNC        0x5537
++#define RL_LINK_NOTICE       0x5538
++#define RL_PIPELINE_RATES    0x553D
++
++// Whether this connection's host listed the message type in a=x-rl-control.
++bool LiHostAcceptsRubylightMessage(uint16_t type);
++
++// Sends one Rubylight message on the encrypted control stream. Unreliable
++// messages are unsequenced: a lost one is replaced by the next. Returns 0 when
++// sent, or a negative value when the host did not list the type, the control
++// stream is not encrypted or connected, or the send failed. May be called from
++// any thread.
++int LiSendRubylightMessage(uint16_t type, const void* payload, int length, bool reliable);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/RtspConnection.c b/src/RtspConnection.c
+index f6987ec..45a6b68 100644
+--- a/src/RtspConnection.c
++++ b/src/RtspConnection.c
+@@ -1,6 +1,7 @@
+ #include "Limelight-internal.h"
+ #include "AudioQuality.h"
+ #include "PyroWave.h"
++#include "RubylightControl.h"
+ #include "Rtsp.h"
+ 
+ #define RTSP_CONNECT_TIMEOUT_SEC 10
+@@ -960,6 +961,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+     pyrowaveDialect = PYROWAVE_DIALECT_NONE;
+     NegotiatedPyroWaveExtendedFecBlocks = false;
+     pyrowaveCompatibilityError[0] = 0;
++    setRubylightControlMessages(NULL, 0);
+     useEnet = (AppVersionQuad[0] >= 5) && (AppVersionQuad[0] <= 7) && (AppVersionQuad[2] < 404);
+     currentSeqNumber = 1;
+     hasSessionId = false;
+@@ -1190,6 +1192,17 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+             SunshineFeatureFlags = 0;
+         }
+ 
++        // Rubylight control messages this host takes (Rubylight 2.2.0+)
++        if (IS_SUNSHINE()) {
++            uint16_t rubylightMessages[RL_MAX_CONTROL_MESSAGES];
++            int rubylightMessageCount = LiRubylightParseControlMessages(response.payload, rubylightMessages,
++                                                                        RL_MAX_CONTROL_MESSAGES);
++            setRubylightControlMessages(rubylightMessages, rubylightMessageCount);
++            if (rubylightMessageCount > 0) {
++                Limelog("Host takes %d Rubylight control messages\n", rubylightMessageCount);
++            }
++        }
++
+         // Look for the Sunshine encryption flags in the SDP attributes
+         if (!parseSdpAttributeToUInt(response.payload, "x-ss-general.encryptionSupported", &EncryptionFeaturesSupported)) {
+             EncryptionFeaturesSupported = 0;
+diff --git a/src/SdpGenerator.c b/src/SdpGenerator.c
+index afbee4a..9bde785 100644
+--- a/src/SdpGenerator.c
++++ b/src/SdpGenerator.c
+@@ -439,6 +439,12 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+         snprintf(payloadStr, sizeof(payloadStr), "%d", slicesPerFrame);
+         err |= addAttributeString(&optionHead, "x-nv-video[0].videoEncoderSlicesPerFrame", payloadStr);
+ 
++        if (IS_SUNSHINE() && StreamConfig.pyrowaveLinkMbps > 0) {
++            // The client's own wired link: Rubylight caps the bitrate and pacing below it.
++            snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.pyrowaveLinkMbps);
++            err |= addAttributeString(&optionHead, "x-ss-video[0].pyrowaveLinkMbps", payloadStr);
++        }
++
+         if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
+             err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "3");
+             err |= addAttributeString(&optionHead, "x-ss-pyrowave.bitstream", PYROWAVE_BITSTREAM_ID);
+@@ -447,6 +453,11 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+                 err |= addAttributeString(&optionHead, "x-ss-video[0].pyrowaveAdaptiveFec", "0");
+                 err |= addAttributeString(&optionHead, "x-ss-video[0].pyrowaveAdaptiveBitrate", "0");
+                 err |= addAttributeString(&optionHead, "x-ss-video[0].pyrowaveFeatures", "1");
++                if (StreamConfig.pyrowavePaceMbps > 0) {
++                    // Rubylight and Vibeshine pace PyroWave frames at the client's calibrated pace.
++                    snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.pyrowavePaceMbps);
++                    err |= addAttributeString(&optionHead, "x-ss-video[0].pyrowavePaceMbps", payloadStr);
++                }
+             } else {
+                 err |= addAttributeString(&optionHead, "x-ss-pyrowave.version", "1");
+                 err |= addAttributeString(&optionHead, "x-ss-pyrowave.dialect", "native-wire-v1");
+diff --git a/src/RubylightControl.h b/src/RubylightControl.h
+new file mode 100644
+index 0000000..e670e0e
+--- /dev/null
++++ b/src/RubylightControl.h
+@@ -0,0 +1,89 @@
++// Rubylight control messages (Rubylight docs/control-messages.md; wire formats in
++// Nightjar's rubylight-protocol crate). The host's DESCRIBE answer names the
++// client-to-host messages it takes, on one or more lines:
++//   a=x-rl-control:0x5530,0x5531,0x5532
++// A client sends a message only when its id is listed. Ids are 16-bit, hexadecimal
++// with 0x or decimal; malformed entries are skipped and duplicates dropped.
++#pragma once
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "Limelight.h"
++
++#define RL_MAX_CONTROL_MESSAGES 32
++
++// Host-to-client messages handed to ConnListenerRubylightMessage, with the
++// largest payload each may carry. A host timing report has a 4-byte header and
++// up to 32 records of 20 bytes, plus up to 16 extension bytes each.
++static inline int LiRubylightMaxPayload(uint16_t type) {
++    switch (type) {
++    case RL_HOST_TIMING: return 4 + 32 * (20 + 16);
++    case RL_CLOCK_SYNC: return 256;
++    case RL_LINK_NOTICE: return 64;
++    case RL_PIPELINE_RATES: return 64;
++    default: return 0;
++    }
++}
++
++static inline int LiRubylightHexDigit(char c) {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++}
++
++// Parses one id from [start, end); false when it is not a whole 16-bit number.
++static inline bool LiRubylightParseId(const char* start, const char* end, uint16_t* id) {
++    while (start < end && (*start == ' ' || *start == '\t')) start++;
++    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
++    unsigned int base = 10;
++    if (end - start > 2 && start[0] == '0' && (start[1] == 'x' || start[1] == 'X')) {
++        base = 16;
++        start += 2;
++    }
++    if (start == end) return false;
++    uint32_t value = 0;
++    for (; start < end; start++) {
++        int digit = LiRubylightHexDigit(*start);
++        if (digit < 0 || (unsigned int)digit >= base) return false;
++        value = value * base + (uint32_t)digit;
++        if (value > 0xFFFF) return false;
++    }
++    *id = (uint16_t)value;
++    return true;
++}
++
++// Returns how many ids the SDP's x-rl-control lines name (written to ids, at most
++// maxIds); 0 for hosts that send no such line.
++static inline int LiRubylightParseControlMessages(const char* sdp, uint16_t* ids, int maxIds) {
++    static const char prefix[] = "a=x-rl-control:";
++    const size_t prefixLength = sizeof(prefix) - 1;
++    int count = 0;
++    if (sdp == NULL) return 0;
++    for (const char* line = sdp; *line;) {
++        const char* end = strchr(line, '\n');
++        size_t length = end ? (size_t)(end - line) : strlen(line);
++        if (length && line[length - 1] == '\r') length--;
++        if (length > prefixLength && !memcmp(line, prefix, prefixLength)) {
++            const char* item = line + prefixLength;
++            const char* lineEnd = line + length;
++            while (item < lineEnd) {
++                const char* comma = (const char*)memchr(item, ',', (size_t)(lineEnd - item));
++                const char* itemEnd = comma ? comma : lineEnd;
++                uint16_t id;
++                if (LiRubylightParseId(item, itemEnd, &id)) {
++                    bool seen = false;
++                    for (int i = 0; i < count; i++) seen |= ids[i] == id;
++                    if (!seen && count < maxIds) ids[count++] = id;
++                }
++                item = itemEnd + 1;
++            }
++        }
++        if (!end) break;
++        line = end + 1;
++    }
++    return count;
++}
+diff --git a/tests/rubylight_control.c b/tests/rubylight_control.c
+new file mode 100644
+index 0000000..98a4b5b
+--- /dev/null
++++ b/tests/rubylight_control.c
+@@ -0,0 +1,37 @@
++// Rubylight control negotiation: the ids a host lists in a=x-rl-control.
++#include "RubylightControl.h"
++#include <assert.h>
++#include <stdio.h>
++
++static int parse(const char* sdp, uint16_t* ids) {
++    return LiRubylightParseControlMessages(sdp, ids, RL_MAX_CONTROL_MESSAGES);
++}
++
++int main(void) {
++    uint16_t ids[RL_MAX_CONTROL_MESSAGES];
++
++    assert(parse(NULL, ids) == 0);
++    assert(parse("v=0\r\na=x-ss-general.featureFlags:3\r\n", ids) == 0);
++
++    // Rubylight 2.2.0's line, then 3.0's second line; both are read and merged.
++    assert(parse("a=x-rl-control:0x5530,0x5531,0x5532\r\n"
++                 "a=fmtp:97 surround-params=21101\r\n"
++                 "a=x-rl-control:0x5539,0x553b,0x553D,0x553e\r\n", ids) == 7);
++    assert(ids[0] == RL_PHASE_LOCK_REPORT && ids[2] == 0x5532 && ids[5] == RL_PIPELINE_RATES && ids[6] == 0x553E);
++
++    // Decimal ids, spaces, a missing final newline; duplicates and malformed entries are skipped.
++    assert(parse("a=x-rl-control: 21808 , 0x5536,0x5536,0xZZ,,70000,0x\na=x-rl-control:0x5537", ids) == 3);
++    assert(ids[0] == RL_PHASE_LOCK_REPORT && ids[1] == RL_HOST_TIMING && ids[2] == RL_CLOCK_SYNC);
++
++    // Only whole lines starting with the attribute count.
++    assert(parse("b=x-rl-control:0x5530\r\nxa=x-rl-control:0x5530\r\na=x-rl-control:\r\n", ids) == 0);
++
++    // At most maxIds are kept.
++    assert(LiRubylightParseControlMessages("a=x-rl-control:1,2,3,4", ids, 2) == 2 && ids[1] == 2);
++
++    assert(LiRubylightMaxPayload(RL_HOST_TIMING) == 1156);
++    assert(LiRubylightMaxPayload(RL_PHASE_LOCK_REPORT) == 0);
++
++    printf("rubylight control tests passed\n");
++    return 0;
++}

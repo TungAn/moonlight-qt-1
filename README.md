@@ -212,6 +212,7 @@ from a terminal and capture its output.
 ## Documentation
 
 - [VRR presentation](docs/VRR.md)
+- [Rubylight control messages](docs/RUBYLIGHT.md)
 - [PyroWave network tuning and calibration](docs/PYROWAVE_NETWORKING.md)
 - [Native controllers](docs/NATIVE_CONTROLLERS.md)
 - [Linux display backends and AppImage packaging](docs/LINUX_DISPLAY.md)

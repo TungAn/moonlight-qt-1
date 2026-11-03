@@ -435,6 +435,7 @@ void PyroWaveVideoDecoder::updatePerformanceOverlay(const VIDEO_STATS& stats)
     else if (m_VrrRequested) {
         used += Vrr::formatFallback(m_VrrFallback, text + used, int(sizeof(text)) - used);
     }
+    used += Session::get()->rubylight().formatOverlay(text + used, int(sizeof(text)) - used);
 
     overlay.updateOverlayText(Overlay::OverlayDebug, text);
 }
@@ -636,6 +637,7 @@ int PyroWaveVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
         }
         m_PendingSize = frameSize;
         m_EnqueueTime = now;
+        m_PendingRtp = du->rtpTimestamp;
         if (!m_Threaded && !m_EventQueued) {
             SDL_Event event {};
             event.type = SDL_USEREVENT;
@@ -942,11 +944,13 @@ void PyroWaveVideoDecoder::renderPendingFrame(bool rendererReady)
     bool refreshOverlay = false;
     size_t size;
     uint64_t enqueueTime;
+    uint32_t rtpTimestamp;
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         frame = std::move(m_Pending);
         size = m_PendingSize;
         enqueueTime = m_EnqueueTime;
+        rtpTimestamp = m_PendingRtp;
         m_EventQueued = false;
     }
     if (frame.empty()) return;
@@ -962,6 +966,8 @@ void PyroWaveVideoDecoder::renderPendingFrame(bool rendererReady)
         }
     }
     else {
+        // Presented: phase lock and frame latency for a Rubylight host.
+        Session::get()->rubylight().framePresented(rtpTimestamp);
         std::lock_guard<std::mutex> lock(m_Mutex);
         m_ActiveVideoStats.decodedFrames++;
         m_ActiveVideoStats.renderedFrames++;
