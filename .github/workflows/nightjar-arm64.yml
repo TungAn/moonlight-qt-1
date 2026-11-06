@@ -1,0 +1,133 @@
+---
+name: Build Nightjar desktop (Linux arm64)
+
+# Nightjar for Linux on arm64, for the Retroid Pocket 6 (SteamOS ARM). Nightjar publishes only
+# x86_64 desktop builds; this repeats its release workflow's desktop-linux job
+# (RamazanKara/nightjar .github/workflows/release.yml) on an arm64 runner, from the upstream tag,
+# up to the tar.gz. The .deb, .rpm, AppImage and Flatpak steps are left out: their tools are
+# pinned to x86_64.
+
+on:
+  push:
+    branches:
+      - nightjar-arm64
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Nightjar tag to build
+        required: false
+        default: v4.8.0
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    env:
+      NIGHTJAR_REF: ${{ inputs.ref || 'v4.8.0' }}
+      # From the tag's release.yml: the Rubylight commit with PyroWave patch 0002, and FFmpeg.
+      RUBYLIGHT_SHA: 957ace5a9cdb14b5f39cffbe662f0df1dcb41caf
+      FFMPEG_VERSION: 8.1.2
+      FFMPEG_SHA256: 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+    steps:
+      - name: Check out Nightjar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: RamazanKara/nightjar
+          ref: ${{ env.NIGHTJAR_REF }}
+          path: nightjar
+          persist-credentials: false
+
+      # SDL with the Vulkan interop patch (protocol/vendor/sdl3-src/README.md).
+      - name: SDL source
+        run: git -C nightjar submodule update --init --depth 1 protocol/vendor/sdl3-src/SDL
+
+      - name: Rubylight host files for the PyroWave SDK
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: RamazanKara/Rubylight
+          ref: ${{ env.RUBYLIGHT_SHA }}
+          path: rubylight-host
+          sparse-checkout: |
+            rust/tools/build_pyrowave.sh
+            rust/codec-patches/pyrowave
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Install the build packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends meson ninja-build pkg-config libclang-dev \
+            nasm libopus-dev libva-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols libegl-dev libgl-dev libgles-dev libdrm-dev libgbm-dev libpulse-dev \
+            libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libdecor-0-dev \
+            libvulkan-dev build-essential curl git xz-utils file python3-pip
+
+      # The PyroWave SDK needs cmake 3.27 or newer and nightjar-desktop Rust 1.85 or newer; the arm64
+      # image may carry older ones or none.
+      - name: Toolchain
+        run: |
+          need_cmake=1
+          if command -v cmake >/dev/null; then
+            v=$(cmake --version | sed -n 's/^cmake version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+            set -- $v
+            if [ "$1" -gt 3 ] || { [ "$1" -eq 3 ] && [ "$2" -ge 27 ]; }; then need_cmake=0; fi
+          fi
+          if [ "$need_cmake" = 1 ]; then
+            python3 -m pip install --user -q 'cmake>=3.27,<4'
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+          if ! command -v rustup >/dev/null; then
+            curl -sSf --retry 5 https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          else
+            rustup toolchain install stable --profile minimal -q
+            rustup default stable
+          fi
+
+      - name: Tool versions
+        run: |
+          uname -m; ldd --version | head -n1
+          cmake --version | head -n1; rustc -V; cargo -V; meson --version; nasm -v
+
+      - name: Build the decode-only FFmpeg
+        run: |
+          curl -sSLf --retry 5 --retry-all-errors -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
+          echo "$FFMPEG_SHA256  ffmpeg.tar.xz" | sha256sum -c -
+          tar -xf ffmpeg.tar.xz
+          bash nightjar/protocol/desktop/ffmpeg-deps-linux.sh "$RUNNER_TEMP/ffdeps"
+          PKG_CONFIG_PATH="$RUNNER_TEMP/ffdeps/lib/pkgconfig" bash nightjar/protocol/desktop/ffmpeg-decode-only.sh "$PWD/ffmpeg-$FFMPEG_VERSION" "$PWD/ffprefix"
+
+      - name: Build the PyroWave SDK
+        run: bash nightjar/scripts/build-pyrowave-sdk.sh -o "$GITHUB_WORKSPACE/pyrowave-sdk" -H "$GITHUB_WORKSPACE/rubylight-host"
+
+      # package-linux.sh checks the SDK against the pin, builds, and runs the unpacked archive as
+      # `nightjar --check-pyrowave` (exit 2, no Vulkan device, is accepted on a runner).
+      - name: Build and package
+        run: |
+          version=${NIGHTJAR_REF#v}
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          bash nightjar/protocol/desktop/package-linux.sh -f "$GITHUB_WORKSPACE/ffprefix" -s "$GITHUB_WORKSPACE/pyrowave-sdk" -v "$version" -o "$GITHUB_WORKSPACE/dist"
+
+      - name: Check the package
+        run: |
+          name="nightjar-desktop-$VERSION-linux-aarch64"
+          mkdir unpacked && tar -C unpacked -xzf "dist/$name.tar.gz"
+          file "unpacked/$name/nightjar"
+          ldd "unpacked/$name/nightjar" | tee ldd.txt
+          ! grep 'not found' ldd.txt || { echo "::error::nightjar has libraries that are not found"; exit 1; }
+          grep -Eq "libavcodec\.so.* => $PWD/unpacked/$name/lib/" ldd.txt || { echo "::error::libavcodec is not the packaged one"; exit 1; }
+          printed=$("unpacked/$name/nightjar" --version)
+          echo "$printed"
+          test "$printed" = "Nightjar $VERSION" || { echo "::error::nightjar --version printed '$printed'"; exit 1; }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: nightjar-desktop-linux-aarch64
+          path: dist/*.tar.gz
+          compression-level: 0
+          if-no-files-found: error
