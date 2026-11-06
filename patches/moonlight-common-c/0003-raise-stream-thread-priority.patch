@@ -1,0 +1,91 @@
+diff --git a/src/Platform.c b/src/Platform.c
+index 458fd98..a1055d9 100644
+--- a/src/Platform.c
++++ b/src/Platform.c
+@@ -4,6 +4,9 @@
+ #include <pthread.h>
+ #include <psp2/kernel/processmgr.h>
+ #endif
++#if defined(__linux__)
++#include <sys/resource.h>
++#endif
+ 
+ // The maximum amount of time before observing an interrupt
+ // in PltSleepMsInterruptible().
+@@ -67,6 +70,66 @@ void setThreadNameWin32(const char* name) {
+ }
+ #endif
+ 
++#if defined(__linux__)
++// The stream threads on a frame's way to the screen run above normal priority, as Nightjar's
++// client raises them: the video receive thread also reassembles each frame and submits it to the
++// decoder with direct submit, so it and the video decoder thread get nice -8, the audio and control
++// threads -4. The soft RLIMIT_NICE is often 0 under a higher hard limit (28 on SteamOS, allowing
++// -8), so it is raised to the hard limit first, and a nice the limit does not allow is clamped to
++// it. A refusal leaves the thread at its normal priority. PYROLIGHT_THREAD_PRIORITY=0 turns this
++// off (A/B checks).
++static void raiseStreamThreadPriority(const char* name) {
++    static const struct {
++        const char* name;
++        int nice;
++    } threads[] = {
++        { "VideoRecv", -8 },
++        { "VideoDec", -8 },
++        { "AudioRecv", -4 },
++        { "AudioDec", -4 },
++        { "ControlRecv", -4 },
++    };
++    const char* setting = getenv("PYROLIGHT_THREAD_PRIORITY");
++    struct rlimit limit;
++    int nice = 0;
++
++    if (setting != NULL && strcmp(setting, "0") == 0) {
++        return;
++    }
++    for (size_t i = 0; i < sizeof(threads) / sizeof(threads[0]); i++) {
++        if (strcmp(name, threads[i].name) == 0) {
++            nice = threads[i].nice;
++            break;
++        }
++    }
++    if (nice == 0) {
++        return;
++    }
++
++    if (getrlimit(RLIMIT_NICE, &limit) == 0) {
++        if (limit.rlim_cur < limit.rlim_max) {
++            limit.rlim_cur = limit.rlim_max;
++            if (setrlimit(RLIMIT_NICE, &limit) < 0) {
++                getrlimit(RLIMIT_NICE, &limit);
++            }
++        }
++        // RLIMIT_NICE n allows nice values down to 20 - n
++        if (limit.rlim_cur != RLIM_INFINITY && nice < 20 - (int)limit.rlim_cur) {
++            nice = 20 - (int)limit.rlim_cur;
++        }
++    }
++    if (nice >= 0) {
++        Limelog("%s keeps normal priority: RLIMIT_NICE allows no raise\n", name);
++    }
++    else if (setpriority(PRIO_PROCESS, 0, nice) < 0) {
++        Limelog("%s keeps normal priority: setpriority(%d) failed: %d\n", name, nice, errno);
++    }
++    else {
++        Limelog("%s runs at nice %d\n", name, nice);
++    }
++}
++#endif
++
+ #if defined(LC_WINDOWS)
+ DWORD WINAPI ThreadProc(LPVOID lpParameter) {
+     struct thread_context* ctx = (struct thread_context*)lpParameter;
+@@ -85,6 +148,9 @@ void* ThreadProc(void* context) {
+     setThreadNameWin32(ctx->name);
+ #elif defined(__linux__) || defined(__FreeBSD__)
+     pthread_setname_np(pthread_self(), ctx->name);
++#if defined(__linux__)
++    raiseStreamThreadPriority(ctx->name);
++#endif
+ #elif defined(LC_DARWIN)
+     pthread_setname_np(ctx->name);
+ #endif
