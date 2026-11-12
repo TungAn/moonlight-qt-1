@@ -674,6 +674,21 @@ bool Session::initialize(QQuickWindow* qtWindow)
 {
     m_QtWindow = qtWindow;
 
+    // lsfg-vk reads its glide settings when the stream's swapchain is created, after this point.
+    // The checkbox decides; it overrides a launcher's ~/.config/lsfg-vk/glide-slack either way.
+    if (m_Preferences->smoothFramegenPacing) {
+        qputenv("LSFGVK_GLIDE_SLACK_MS", "0");
+        qputenv("LSFGVK_GLIDE_SLACK_WINDOW", "240");
+        qputenv("LSFGVK_GLIDE_PICK_LEAD_MS", "3");
+    }
+    else {
+        qunsetenv("LSFGVK_GLIDE_SLACK_MS");
+        qunsetenv("LSFGVK_GLIDE_SLACK_WINDOW");
+        qunsetenv("LSFGVK_GLIDE_PICK_LEAD_MS");
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Smooth frame generation pacing (lsfg-vk slack rule): %s",
+                m_Preferences->smoothFramegenPacing ? "on" : "off");
+
 #ifdef Q_OS_DARWIN
     if (qEnvironmentVariableIntValue("I_WANT_BUGGY_FULLSCREEN") == 0) {
         // If we have a notch and the user specified one of the two native display modes

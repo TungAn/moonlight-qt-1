@@ -1115,6 +1115,24 @@ Flickable {
                 }
 
                 CheckBox {
+                    id: smoothFramegenPacingCheck
+                    width: parent.width
+                    hoverEnabled: true
+                    text: qsTr("Smooth frame generation pacing (lsfg-vk)")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.smoothFramegenPacing
+                    onCheckedChanged: {
+                        if (!StreamingPreferences.applyingProfile) {
+                            StreamingPreferences.smoothFramegenPacing = checked
+                        }
+                    }
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 8000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("With lsfg-vk frame generation: keeps a fuller queue of frames so late frames rarely show as a hitch. Fewer hitches (about 0.4/s instead of 1.1/s on the RP6) for about 11 ms more latency. Applies from the next stream.")
+                }
+
+                CheckBox {
                     id: vrrCheck
                     width: parent.width
                     hoverEnabled: true

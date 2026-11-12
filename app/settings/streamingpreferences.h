@@ -202,6 +202,8 @@ public:
     Q_PROPERTY(bool pyrowaveSendPace MEMBER pyrowaveSendPace NOTIFY pyrowaveSendPaceChanged)
     // Report display latch slack to Rubylight hosts so they time captures to it.
     Q_PROPERTY(bool rubylightPhaseLock MEMBER rubylightPhaseLock NOTIFY rubylightPhaseLockChanged)
+    // lsfg-vk frame generation: keep a fuller present queue (its slack rule) for fewer hitches at more latency.
+    Q_PROPERTY(bool smoothFramegenPacing MEMBER smoothFramegenPacing NOTIFY smoothFramegenPacingChanged)
     Q_PROPERTY(MicEchoCancel micEchoCancel MEMBER micEchoCancel NOTIFY micEchoCancelChanged)
     Q_PROPERTY(VideoCodecConfig videoCodecConfig MEMBER videoCodecConfig NOTIFY videoCodecConfigChanged)
     Q_PROPERTY(bool enableHdr MEMBER enableHdr NOTIFY enableHdrChanged)
@@ -290,6 +292,7 @@ public:
     bool enableMicrophone;
     bool pyrowaveSendPace;
     bool rubylightPhaseLock;
+    bool smoothFramegenPacing;
     MicEchoCancel micEchoCancel;
     VideoCodecConfig videoCodecConfig;
     bool enableHdr;
@@ -328,6 +331,7 @@ signals:
     void enableMicrophoneChanged();
     void pyrowaveSendPaceChanged();
     void rubylightPhaseLockChanged();
+    void smoothFramegenPacingChanged();
     void micEchoCancelChanged();
     void videoCodecConfigChanged();
     void enableHdrChanged();
