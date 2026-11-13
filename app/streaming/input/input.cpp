@@ -43,6 +43,24 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_DragTimer(0),
       m_DragButton(0),
       m_NumFingersDown(0),
+      m_TouchScrollScale(1.0f),
+      m_TouchScrolling(false),
+      m_LoggedTouchScroll(false),
+      m_TouchScrollMoved(0),
+      m_TouchScrollAccumX(0),
+      m_TouchScrollAccumY(0),
+      m_TouchScrollTotalX(0),
+      m_TouchScrollTotalY(0),
+      m_TouchScrollSamples(),
+      m_TouchScrollSampleCount(0),
+      m_TouchScrollSampleHead(0),
+      m_TouchScrollMomentumTimer(0),
+      m_TouchScrollMomentumActive(false),
+      m_TouchScrollVelX(0),
+      m_TouchScrollVelY(0),
+      m_TouchScrollMomentumAccumX(0),
+      m_TouchScrollMomentumAccumY(0),
+      m_TouchScrollMomentumTicks(0),
       m_PcKeyboard(std::make_unique<PcKeyboard>([this](SDL_Scancode scancode, bool down, Uint16 mod) {
           sendPcKeyboardKey(scancode, down, mod);
       })),
@@ -75,6 +93,13 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
     m_ControllerInput.backgroundAllowed = prefs.backgroundGamepad;
 #ifdef Q_OS_LINUX
     m_ControllerInput.gamingMode = qgetenv("SteamGamepadUI") == "1";
+
+    // PYROLIGHT_TOUCH_SCROLL_SCALE: speed of two-finger scrolling in trackpad mode (1 = default)
+    bool scrollScaleOk = false;
+    float scrollScale = qEnvironmentVariable("PYROLIGHT_TOUCH_SCROLL_SCALE").toFloat(&scrollScaleOk);
+    if (scrollScaleOk && scrollScale > 0) {
+        m_TouchScrollScale = scrollScale;
+    }
 #endif
     m_OldBackgroundEvents = SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
     SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", SDL_HINT_OVERRIDE);
@@ -279,6 +304,7 @@ SdlInputHandler::~SdlInputHandler()
     SDL_RemoveTimer(m_LeftButtonReleaseTimer);
     SDL_RemoveTimer(m_RightButtonReleaseTimer);
     SDL_RemoveTimer(m_DragTimer);
+    stopTouchScrollMomentum();
 
 #if !SDL_VERSION_ATLEAST(2, 0, 9)
     SDL_QuitSubSystem(SDL_INIT_HAPTIC);

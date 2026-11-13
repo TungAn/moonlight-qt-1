@@ -8,6 +8,8 @@
 #include "gamescopeinputfocus.h"
 #include "pckeyboard.h"
 
+#include <atomic>
+
 struct GamepadState {
     SDL_GameController* controller;
     SDL_JoystickID jsId;
@@ -229,6 +231,14 @@ private:
     static
     Uint32 dragTimerCallback(Uint32 interval, void* param);
 
+    static
+    Uint32 touchScrollMomentumCallback(Uint32 interval, void* param);
+
+    // Two-finger scroll in trackpad mode
+    void sendTouchScroll(float unitsX, float unitsY);
+    void startTouchScrollMomentum(Uint32 liftTimestamp);
+    void stopTouchScrollMomentum();
+
     SDL_Window* m_Window;
     ControllerInputOwnership m_ControllerInput;
     Uint32 m_GamepadMouseEventType;
@@ -284,6 +294,33 @@ private:
     SDL_TimerID m_DragTimer;
     char m_DragButton;
     int m_NumFingersDown;
+
+    // Two-finger scroll in trackpad mode. Distances are in wheel units (120 = one notch).
+    struct TouchScrollSample {
+        Uint32 timestamp;
+        float totalX;
+        float totalY;
+    };
+    static constexpr int TOUCH_SCROLL_SAMPLES = 16;
+    float m_TouchScrollScale;
+    bool m_TouchScrolling;
+    bool m_LoggedTouchScroll;
+    float m_TouchScrollMoved;
+    float m_TouchScrollAccumX;
+    float m_TouchScrollAccumY;
+    float m_TouchScrollTotalX;
+    float m_TouchScrollTotalY;
+    TouchScrollSample m_TouchScrollSamples[TOUCH_SCROLL_SAMPLES];
+    int m_TouchScrollSampleCount;
+    int m_TouchScrollSampleHead;
+    // Flick momentum, run on an SDL timer after the fingers lift
+    SDL_TimerID m_TouchScrollMomentumTimer;
+    std::atomic<bool> m_TouchScrollMomentumActive;
+    float m_TouchScrollVelX;
+    float m_TouchScrollVelY;
+    float m_TouchScrollMomentumAccumX;
+    float m_TouchScrollMomentumAccumY;
+    Uint32 m_TouchScrollMomentumTicks;
 
     // Sends a key from the on-screen PC keyboard as if typed on a physical keyboard
     void sendPcKeyboardKey(SDL_Scancode scancode, bool down, Uint16 mod);
