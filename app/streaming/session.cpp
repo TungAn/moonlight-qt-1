@@ -38,6 +38,31 @@
 #define SDL_CODE_GAMECONTROLLER_SET_MOTION_EVENT_STATE 103
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
+#define SDL_CODE_INPUT_ONLY_REPAINT 106
+
+namespace {
+
+// Remote Input has no video renderer to draw the on-screen PC keyboard, so the
+// session's own window painter draws it. Keyboard changes can come from any
+// thread; the repaint happens on the main thread, which owns the SDL renderer.
+class InputOnlyOverlayRenderer : public Overlay::IOverlayRenderer
+{
+public:
+    void notifyOverlayUpdated(Overlay::OverlayType) override
+    {
+        // Text overlays (performance stats) describe video; there is none
+    }
+
+    void notifyKeyboardOverlayUpdated() override
+    {
+        SDL_Event event = {};
+        event.type = SDL_USEREVENT;
+        event.user.code = SDL_CODE_INPUT_ONLY_REPAINT;
+        SDL_PushEvent(&event);
+    }
+};
+
+}
 
 #include <openssl/rand.h>
 
@@ -643,6 +668,8 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_App(app),
       m_InputOnly(app.isRemoteInput()),
       m_InputOnlyRenderer(nullptr),
+      m_InputOnlyOverlay(nullptr),
+      m_InputOnlyKeyboard(nullptr),
       m_Window(nullptr),
       m_VideoDecoder(nullptr),
       m_DecoderLock(SDL_CreateMutex()),
@@ -1912,11 +1939,43 @@ public:
 // Called in a non-main thread
 void Session::paintInputOnlyWindow()
 {
-    if (m_InputOnlyRenderer != nullptr) {
-        SDL_SetRenderDrawColor(m_InputOnlyRenderer, 0, 0, 0, 255);
-        SDL_RenderClear(m_InputOnlyRenderer);
-        SDL_RenderPresent(m_InputOnlyRenderer);
+    if (m_InputOnlyRenderer == nullptr) {
+        return;
     }
+
+    // Pick up a new keyboard image, or drop the old one once the keyboard hides
+    SDL_Surface* keyboard = m_OverlayManager.getUpdatedKeyboardSurface();
+    if (keyboard != nullptr || !m_OverlayManager.isKeyboardVisible()) {
+        if (m_InputOnlyKeyboard != nullptr) {
+            SDL_DestroyTexture(m_InputOnlyKeyboard);
+            m_InputOnlyKeyboard = nullptr;
+        }
+        if (keyboard != nullptr) {
+            m_InputOnlyKeyboard = SDL_CreateTextureFromSurface(m_InputOnlyRenderer, keyboard);
+            SDL_FreeSurface(keyboard);
+        }
+    }
+
+    SDL_SetRenderDrawColor(m_InputOnlyRenderer, 0, 0, 0, 255);
+    SDL_RenderClear(m_InputOnlyRenderer);
+
+    if (m_InputOnlyKeyboard != nullptr) {
+        // Full width along the bottom edge, as the video renderer draws it and as
+        // PcKeyboard::handleTouch() maps touches onto it
+        int outWidth = 0, outHeight = 0, texWidth = 0, texHeight = 0;
+        SDL_GetRendererOutputSize(m_InputOnlyRenderer, &outWidth, &outHeight);
+        SDL_QueryTexture(m_InputOnlyKeyboard, nullptr, nullptr, &texWidth, &texHeight);
+        if (outWidth > 0 && texWidth > 0) {
+            SDL_Rect dst;
+            dst.w = outWidth;
+            dst.h = (int)((long long)outWidth * texHeight / texWidth);
+            dst.x = 0;
+            dst.y = outHeight - dst.h;
+            SDL_RenderCopy(m_InputOnlyRenderer, m_InputOnlyKeyboard, nullptr, &dst);
+        }
+    }
+
+    SDL_RenderPresent(m_InputOnlyRenderer);
 }
 
 bool Session::startConnectionAsync()
@@ -2293,6 +2352,8 @@ void Session::exec()
                         "Remote Input: no renderer to paint the window: %s",
                         SDL_GetError());
         }
+        m_InputOnlyOverlay = new InputOnlyOverlayRenderer();
+        m_OverlayManager.setOverlayRenderer(m_InputOnlyOverlay);
         paintInputOnlyWindow();
     }
 
@@ -2486,6 +2547,9 @@ void Session::exec()
             case SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS:
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
+                break;
+            case SDL_CODE_INPUT_ONLY_REPAINT:
+                paintInputOnlyWindow();
                 break;
             default:
                 SDL_assert(false);
@@ -2845,6 +2909,15 @@ DispatchDeferredCleanup:
 #endif
     }
 
+    if (m_InputOnlyOverlay != nullptr) {
+        m_OverlayManager.setOverlayRenderer(nullptr);
+        delete m_InputOnlyOverlay;
+        m_InputOnlyOverlay = nullptr;
+    }
+    if (m_InputOnlyKeyboard != nullptr) {
+        SDL_DestroyTexture(m_InputOnlyKeyboard);
+        m_InputOnlyKeyboard = nullptr;
+    }
     if (m_InputOnlyRenderer != nullptr) {
         SDL_DestroyRenderer(m_InputOnlyRenderer);
         m_InputOnlyRenderer = nullptr;

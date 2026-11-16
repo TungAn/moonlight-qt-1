@@ -307,6 +307,9 @@ private:
     // m_App is the host's Remote Input app: no video, audio or decoder
     bool m_InputOnly;
     SDL_Renderer* m_InputOnlyRenderer;
+    // Draws the on-screen PC keyboard, which the video renderer draws otherwise
+    Overlay::IOverlayRenderer* m_InputOnlyOverlay;
+    SDL_Texture* m_InputOnlyKeyboard;
     SDL_Window* m_Window;
     IVideoDecoder* m_VideoDecoder;
     SDL_mutex* m_DecoderLock;
