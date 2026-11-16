@@ -206,7 +206,8 @@ CenteredGridView {
         function launchOrResumeSelectedApp(quitExistingApp)
         {
             var runningId = appModel.getRunningAppId()
-            if (runningId !== 0 && runningId !== model.appid) {
+            // Remote Input joins whatever runs on the host, so it never asks to quit it
+            if (runningId !== 0 && runningId !== model.appid && !model.remoteInput) {
                 if (quitExistingApp) {
                     quitAppDialog.appName = appModel.getRunningAppName()
                     quitAppDialog.segueToStream = true

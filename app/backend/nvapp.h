@@ -35,6 +35,15 @@ public:
     void
     serialize(QSettings& settings) const;
 
+    // The host's Remote Input app (input only): the host streams no video or
+    // audio for it. Rubylight lists its tile under these ids; Apollo and
+    // Vibepollo name theirs "Remote Input".
+    bool isRemoteInput() const
+    {
+        return id == 2147483506 || id == 2147483516 || id == 2147483606 ||
+                name.trimmed().compare(QStringLiteral("Remote Input"), Qt::CaseInsensitive) == 0;
+    }
+
     int id = 0;
     QString name;
     bool hdrSupported = false;

@@ -641,6 +641,8 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_VrrFallbackReason(int(Vrr::FallbackReason::NotRequested)),
       m_Computer(computer),
       m_App(app),
+      m_InputOnly(app.isRemoteInput()),
+      m_InputOnlyRenderer(nullptr),
       m_Window(nullptr),
       m_VideoDecoder(nullptr),
       m_DecoderLock(SDL_CreateMutex()),
@@ -856,6 +858,7 @@ bool Session::initialize(QQuickWindow* qtWindow)
 
     // Set up the host's microphone stream; sending starts with the stream.
     m_StreamConfig.enableMic = m_Preferences->enableMicrophone;
+    m_StreamConfig.inputOnly = m_InputOnly;
 
     LiInitializeAudioCallbacks(&m_AudioCallbacks);
     m_AudioCallbacks.init = arInit;
@@ -882,7 +885,8 @@ bool Session::initialize(QQuickWindow* qtWindow)
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H264_HIGH8_444);
     m_SupportedVideoFormats.append(VIDEO_FORMAT_H264);
 
-    switch (m_Preferences->videoCodecConfig)
+    // Remote Input decodes nothing: skip the codec probes and ask for plain H.264
+    switch (m_InputOnly ? StreamingPreferences::VCC_FORCE_H264 : m_Preferences->videoCodecConfig)
     {
     case StreamingPreferences::VCC_AUTO:
     {
@@ -1084,9 +1088,20 @@ bool Session::initialize(QQuickWindow* qtWindow)
 
     // Check for validation errors/warnings and emit
     // signals for them, if appropriate
-    bool ret = validateLaunch(testWindow);
+    bool ret;
+    if (m_InputOnly) {
+        // Nothing to validate or probe: no decoder runs for Remote Input
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Remote Input: input-only session (no video or audio)");
+        m_SupportedVideoFormats.clear();
+        m_SupportedVideoFormats.append(VIDEO_FORMAT_H264);
+        m_StreamConfig.supportedVideoFormats = VIDEO_FORMAT_H264;
+        ret = true;
+    }
+    else {
+        ret = validateLaunch(testWindow);
+    }
 
-    if (ret) {
+    if (ret && !m_InputOnly) {
         // Video format is now locked in
         m_StreamConfig.supportedVideoFormats = m_SupportedVideoFormats.front();
 
@@ -1895,12 +1910,22 @@ public:
 };
 
 // Called in a non-main thread
+void Session::paintInputOnlyWindow()
+{
+    if (m_InputOnlyRenderer != nullptr) {
+        SDL_SetRenderDrawColor(m_InputOnlyRenderer, 0, 0, 0, 255);
+        SDL_RenderClear(m_InputOnlyRenderer);
+        SDL_RenderPresent(m_InputOnlyRenderer);
+    }
+}
+
 bool Session::startConnectionAsync()
 {
     // The UI should have ensured the old game was already quit
-    // if we decide to stream a different game.
+    // if we decide to stream a different game. Remote Input joins it.
     Q_ASSERT(m_Computer->currentGameId == 0 ||
-             m_Computer->currentGameId == m_App.id);
+             m_Computer->currentGameId == m_App.id ||
+             m_InputOnly);
 
     bool enableGameOptimizations;
     if (m_Computer->isNvidiaServerSoftware) {
@@ -1931,7 +1956,8 @@ bool Session::startConnectionAsync()
         NvHTTP http(m_Computer);
         STREAM_CONFIGURATION hostStreamConfig{m_StreamConfig};
         hostStreamConfig.fps = m_HostFrameRate;
-        http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",
+        // Remote Input joins the running game but is launched as its own app
+        http.startApp(m_Computer->currentGameId != 0 && !m_InputOnly ? "resume" : "launch",
                       m_Computer->isNvidiaServerSoftware,
                       m_App.id, &hostStreamConfig,
                       enableGameOptimizations,
@@ -2258,6 +2284,18 @@ void Session::exec()
         }
     }
 
+    if (m_InputOnly) {
+        // No video renderer will ever draw here, so keep the window a plain black
+        // instead of whatever the compositor shows for an unpainted window.
+        m_InputOnlyRenderer = SDL_CreateRenderer(m_Window, -1, SDL_RENDERER_SOFTWARE);
+        if (m_InputOnlyRenderer == nullptr) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Remote Input: no renderer to paint the window: %s",
+                        SDL_GetError());
+        }
+        paintInputOnlyWindow();
+    }
+
     m_InputHandler->setWindow(m_Window);
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
@@ -2581,6 +2619,16 @@ void Session::exec()
 
             // Fall through
         case SDL_RENDER_DEVICE_RESET:
+            if (m_InputOnly) {
+                // No video: there's no decoder or renderer to (re)create. Capture
+                // input here instead of after decoder creation (X11/XWayland).
+                paintInputOnlyWindow();
+                if (needsPostDecoderCreationCapture) {
+                    m_InputHandler->setCaptureActive(true);
+                    needsPostDecoderCreationCapture = false;
+                }
+                break;
+            }
 
             if (event.type != SDL_WINDOWEVENT) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -2795,6 +2843,11 @@ DispatchDeferredCleanup:
             m_QtWindow->setWindowState(Qt::WindowNoState);
         }
 #endif
+    }
+
+    if (m_InputOnlyRenderer != nullptr) {
+        SDL_DestroyRenderer(m_InputOnlyRenderer);
+        m_InputOnlyRenderer = nullptr;
     }
 
     // This must be called after the decoder is deleted, because

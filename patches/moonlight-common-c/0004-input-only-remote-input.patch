@@ -1,0 +1,139 @@
+diff --git a/src/Connection.c b/src/Connection.c
+index c034257..5334360 100644
+--- a/src/Connection.c
++++ b/src/Connection.c
+@@ -6,6 +6,67 @@ static bool alreadyTerminated;
+ static PLT_THREAD terminationCallbackThread;
+ static int terminationCallbackErrorCode;
+ 
++// Input-only sessions (StreamConfig.inputOnly) ping the video port and nothing else of the
++// video stream, as VideoStream.c's ping thread does.
++static SOCKET inputOnlyPingSocket = INVALID_SOCKET;
++static PLT_THREAD inputOnlyPingThread;
++static bool inputOnlyPingRunning;
++
++// Socket errors are ignored, as in VideoStream.c: nothing reads this socket, and an ICMP port
++// unreachable (the host may not have bound the port yet) must not end the session.
++static void inputOnlyPingProc(void* context) {
++    char legacyPingData[] = { 0x50, 0x49, 0x4E, 0x47 };
++    SS_PING ping;
++    LC_SOCKADDR saddr;
++    uint32_t sequence = 0;
++
++    memcpy(&ping, &VideoPingPayload, sizeof(ping));
++    memcpy(&saddr, &RemoteAddr, sizeof(saddr));
++    SET_PORT(&saddr, VideoPortNumber);
++
++    while (!PltIsThreadInterrupted(&inputOnlyPingThread)) {
++        if (ping.payload[0] != 0) {
++            ping.sequenceNumber = BE32(++sequence);
++            sendto(inputOnlyPingSocket, (char*)&ping, sizeof(ping), 0, (struct sockaddr*)&saddr, AddrLen);
++        }
++        else {
++            sendto(inputOnlyPingSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
++        }
++        PltSleepMsInterruptible(&inputOnlyPingThread, 500);
++    }
++}
++
++// Safe on a ping that never started. The thread is joined before its socket is closed.
++static void inputOnlyPingStop(void) {
++    if (inputOnlyPingRunning) {
++        PltInterruptThread(&inputOnlyPingThread);
++        PltJoinThread(&inputOnlyPingThread);
++        inputOnlyPingRunning = false;
++    }
++    if (inputOnlyPingSocket != INVALID_SOCKET) {
++        closeSocket(inputOnlyPingSocket);
++        inputOnlyPingSocket = INVALID_SOCKET;
++    }
++}
++
++// A ping that can't start costs only the ping: it's logged and the session carries on.
++static void inputOnlyPingStart(void) {
++    if (VideoPortNumber == 0) {
++        return;
++    }
++    inputOnlyPingSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen, 0, SOCK_QOS_TYPE_VIDEO);
++    if (inputOnlyPingSocket == INVALID_SOCKET) {
++        Limelog("Input-only video ping: socket failed: %d\n", (int)LastSocketError());
++        return;
++    }
++    if (PltCreateThread("VideoPing", inputOnlyPingProc, NULL, &inputOnlyPingThread) != 0) {
++        Limelog("Input-only video ping: thread failed\n");
++        inputOnlyPingStop();
++        return;
++    }
++    inputOnlyPingRunning = true;
++}
++
+ // Common globals
+ char* RemoteAddrString;
+ struct sockaddr_storage RemoteAddr;
+@@ -88,13 +149,20 @@ void LiStopConnection(void) {
+     }
+     if (stage == STAGE_AUDIO_STREAM_START) {
+         Limelog("Stopping audio stream...");
+-        stopAudioStream();
++        if (!StreamConfig.inputOnly) {
++            stopAudioStream();
++        }
+         stage--;
+         Limelog("done\n");
+     }
+     if (stage == STAGE_VIDEO_STREAM_START) {
+         Limelog("Stopping video stream...");
+-        stopVideoStream();
++        if (StreamConfig.inputOnly) {
++            inputOnlyPingStop();
++        }
++        else {
++            stopVideoStream();
++        }
+         stage--;
+         Limelog("done\n");
+     }
+@@ -503,7 +571,13 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
+ 
+     Limelog("Starting video stream...");
+     ListenerCallbacks.stageStarting(STAGE_VIDEO_STREAM_START);
+-    err = startVideoStream(renderContext, drFlags);
++    if (StreamConfig.inputOnly) {
++        inputOnlyPingStart();
++        err = 0;
++    }
++    else {
++        err = startVideoStream(renderContext, drFlags);
++    }
+     if (err != 0) {
+         Limelog("Video stream start failed: %d\n", err);
+         ListenerCallbacks.stageFailed(STAGE_VIDEO_STREAM_START, err);
+@@ -516,7 +590,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
+ 
+     Limelog("Starting audio stream...");
+     ListenerCallbacks.stageStarting(STAGE_AUDIO_STREAM_START);
+-    err = startAudioStream(audioContext, arFlags);
++    err = StreamConfig.inputOnly ? 0 : startAudioStream(audioContext, arFlags);
+     if (err != 0) {
+         Limelog("Audio stream start failed: %d\n", err);
+         ListenerCallbacks.stageFailed(STAGE_AUDIO_STREAM_START, err);
+diff --git a/src/Limelight.h b/src/Limelight.h
+index 315460e..74f1484 100644
+--- a/src/Limelight.h
++++ b/src/Limelight.h
+@@ -124,6 +124,15 @@ typedef struct _STREAM_CONFIGURATION {
+     // Zero (the default) sends nothing. Hosts that do not know them ignore them.
+     int pyrowavePaceMbps;
+     int pyrowaveLinkMbps;
++
++    // The host's Remote Input app: the host sends no video or audio (Rubylight
++    // never captures or encodes for it). The video and audio streams start
++    // nothing, so no decoder, renderer, receive thread or missing-video timer
++    // runs; only the control and input streams do. The video port still gets
++    // the client's UDP ping, because Apollo and Vibepollo end an input-only
++    // session whose first video ping doesn't arrive within 10 seconds.
++    // Rubylight ignores that ping.
++    bool inputOnly;
+ } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
+ 
+ #define AUDIO_QUALITY_HOST_DEFAULT 0

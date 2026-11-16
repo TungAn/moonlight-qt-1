@@ -172,6 +172,8 @@ private:
 
     bool startConnectionAsync();
 
+    void paintInputOnlyWindow();
+
     bool validateLaunch(SDL_Window* testWindow);
 
     void emitLaunchWarning(QString text);
@@ -302,6 +304,9 @@ private:
     AUDIO_RENDERER_CALLBACKS m_AudioCallbacks;
     NvComputer* m_Computer;
     NvApp m_App;
+    // m_App is the host's Remote Input app: no video, audio or decoder
+    bool m_InputOnly;
+    SDL_Renderer* m_InputOnlyRenderer;
     SDL_Window* m_Window;
     IVideoDecoder* m_VideoDecoder;
     SDL_mutex* m_DecoderLock;
